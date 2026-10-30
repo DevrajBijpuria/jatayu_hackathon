@@ -1,0 +1,19 @@
+.env
+data/index/
+*.duckdb
+# model caches
+.cache/
+huggingface/
+sentence_transformers/
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+node_modules/
+web/.next/
+web/out/

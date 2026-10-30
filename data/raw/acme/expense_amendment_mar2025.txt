@@ -1,0 +1,21 @@
+ACME CORPORATION — EXPENSE POLICY AMENDMENT
+Document ID: ACME-EXP-AMD1
+Issuer: Finance Department
+Issued Date: 2025-03-01
+Document Type: amendment
+
+Subject: Amendment to Expense Reimbursement Policy — Manager Approval Limit
+
+This amendment revises section 4.2 of Expense Reimbursement Policy (ACME-EXP-V1) dated 2023-01-15.
+
+1. Amendment
+
+In supersession of section 4.2 of ACME-EXP-V1, the manager approval limit is revised as follows:
+
+Revised Section 4.2 — Manager Approval
+Managers may approve expenses up to $3,000 per transaction for their direct reports, effective from 2025-03-01.
+
+All other sections of the Expense Reimbursement Policy remain unchanged.
+
+2. Reason for Amendment
+The reduction in the manager approval limit is in response to updated internal audit recommendations to strengthen financial controls.

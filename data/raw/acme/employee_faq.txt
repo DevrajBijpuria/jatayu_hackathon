@@ -1,0 +1,22 @@
+ACME CORPORATION — EMPLOYEE FAQ
+Document ID: ACME-FAQ
+Issuer: HR Helpdesk
+Issued Date: 2024-08-10
+Document Type: faq
+
+Frequently Asked Questions — Expenses and Approvals
+
+Q1: How do I submit an expense report?
+A1: Submit expense reports through the company's expense management system within 30 days of incurring the expense. Attach all receipts.
+
+Q2: What is the manager approval limit for expenses?
+A2: Managers can approve expenses up to $5,000 per transaction.
+
+Q3: What expenses are not reimbursable?
+A3: Personal entertainment, fines and penalties, and political contributions are not reimbursable.
+
+Q4: Who approves expenses above the manager limit?
+A4: Expenses above the manager limit require Director or CFO approval depending on the amount.
+
+Q5: How long does reimbursement take?
+A5: Reimbursement is typically processed within 10 business days of approval.
