@@ -1,0 +1,15 @@
+ACME CORPORATION — COMPLIANCE DEPARTMENT EXPENSE LIMIT
+Document ID: ACME-COMP-EXP
+Issuer: Finance Department
+Issued Date: 2024-11-01
+Document Type: policy
+
+Access Level: compliance
+
+Compliance Department Expense Controls
+
+Employees in the Compliance Department are subject to a stricter expense approval limit of $2,000 per transaction, regardless of the standard policy limits.
+
+All Compliance Department expense claims above $500 require dual approval: direct manager and the Chief Compliance Officer.
+
+This policy applies in addition to any general expense policy and takes precedence where amounts differ.

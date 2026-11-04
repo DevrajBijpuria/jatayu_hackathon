@@ -1,0 +1,15 @@
+ACME CORPORATION — MUMBAI TRAVEL EXPENSE POLICY
+Document ID: ACME-TRAVEL-MUM
+Issuer: Finance Department
+Issued Date: 2024-03-15
+Document Type: policy
+
+Scope: location=mumbai;category=travel
+
+Travel Expense Limits — Mumbai Region
+
+Employees traveling to or within Mumbai for business purposes may claim travel expenses up to $4,000 per trip.
+
+Claims must be submitted within 30 days of trip completion with original receipts.
+
+Hotel accommodation must not exceed $200 per night unless pre-approved by the CFO.

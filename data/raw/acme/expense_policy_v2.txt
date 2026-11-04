@@ -1,0 +1,38 @@
+ACME CORPORATION — EXPENSE REIMBURSEMENT POLICY (REVISED)
+Document ID: ACME-EXP-V2
+Issuer: Finance Department
+Issued Date: 2025-07-01
+Document Type: policy
+
+This policy supersedes ACME-EXP-V1 in its entirety.
+
+1. Purpose
+This revised policy governs the reimbursement of business expenses incurred by employees of Acme Corporation.
+
+2. Scope
+This policy applies to all full-time and part-time employees of Acme Corporation.
+
+3. General Principles
+Employees are expected to exercise reasonable judgment and spend company funds responsibly.
+
+4. Approval Limits
+
+4.1 Employee Self-Approval
+Employees may self-approve and submit for reimbursement any individual expense up to $750.
+
+4.2 Manager Approval
+Managers may approve expenses up to $3,000 per transaction for their direct reports.
+
+4.3 Director Approval
+Directors may approve expenses up to $20,000 per transaction.
+
+4.4 CFO Approval
+The CFO may approve any expense above $20,000.
+
+5. Reimbursement Process
+Employees must submit expense reports within 30 days of incurring the expense.
+All receipts must be attached to the expense report.
+Expense reports must be submitted through the company's expense management system.
+
+6. Non-Reimbursable Expenses
+Personal entertainment, fines and penalties, and political contributions are not reimbursable.

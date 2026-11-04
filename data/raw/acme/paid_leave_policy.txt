@@ -1,0 +1,15 @@
+ACME CORPORATION — PAID LEAVE POLICY
+Document ID: ACME-LEAVE-V1
+Issuer: Human Resources
+Issued Date: 2023-06-01
+Document Type: policy
+
+Annual Paid Leave Entitlement
+
+All full-time employees of Acme Corporation are entitled to 20 days of paid annual leave per calendar year.
+
+Leave must be pre-approved by the employee's direct manager at least 5 business days in advance.
+
+Unused leave up to a maximum of 5 days may be carried forward to the following year.
+
+Leave encashment is not permitted except upon separation from employment.
