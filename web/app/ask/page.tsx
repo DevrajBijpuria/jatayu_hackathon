@@ -120,7 +120,9 @@ export default function AskPage() {
                 {STATUS_LABELS[verdict.status as Status] ?? verdict.status}
               </span>
             </div>
-            <p className="text-slate-800 text-sm leading-relaxed">{verdict.answer_text}</p>
+            <p className="text-slate-800 text-sm leading-relaxed" style={{ color: "#1e293b" }}>
+              {verdict.answer_text}
+            </p>
           </div>
 
           {/* Sources side-by-side */}
@@ -142,7 +144,9 @@ export default function AskPage() {
                     >
                       <div className="flex items-center justify-between">
                         <span className="text-xs font-mono text-slate-500">{src.clause_id}</span>
-                        <span className="text-xs text-slate-400">{src.effective_date}</span>
+                        {src.effective_date && src.effective_date !== "None" && (
+                          <span className="text-xs text-slate-400">{src.effective_date}</span>
+                        )}
                       </div>
                       {isHindi ? (
                         <div className="space-y-1">
@@ -197,7 +201,11 @@ export default function AskPage() {
                   </div>
                 ))}
                 {verdict.decisions.length === 0 && (
-                  <p className="text-sm text-slate-400 italic">No decisions recorded.</p>
+                  <p className="text-sm text-slate-500">
+                    {verdict.status === "SUPPORTED"
+                      ? "Single clause — no conflict to resolve. The source clause was returned directly."
+                      : "No decisions recorded."}
+                  </p>
                 )}
               </div>
             )}

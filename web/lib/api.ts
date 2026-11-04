@@ -73,6 +73,20 @@ export interface Connector {
   last_status: string;
 }
 
+export interface IngestedDoc {
+  doc_id: string;
+  title: string;
+  doc_type: string | null;
+  language: string | null;
+  access_level: string;
+  ingested_at: string | null;
+  issuer: string | null;
+  issued_date: string | null;
+  origin: string | null;
+  source_path: string | null;
+  clause_count: number;
+}
+
 export const ask = (q: string, as_of: string | null, auth: AuthHeaders) =>
   apiFetch<AskResponse>("/ask", auth, {
     method: "POST",
@@ -81,6 +95,9 @@ export const ask = (q: string, as_of: string | null, auth: AuthHeaders) =>
 
 export const getConflicts = (auth: AuthHeaders) =>
   apiFetch<Conflict[]>("/conflicts", auth);
+
+export const getDocuments = (auth: AuthHeaders) =>
+  apiFetch<IngestedDoc[]>("/documents", auth);
 
 export const getReviewQueue = (auth: AuthHeaders) =>
   apiFetch<ReviewItem[]>("/review", auth);

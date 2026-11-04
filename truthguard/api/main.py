@@ -263,6 +263,37 @@ def audit_entry(log_id: str, user: User = Depends(get_current_user)) -> dict[str
     }
 
 
+@app.get("/documents")
+def list_documents(user: User = Depends(require_admin)) -> list[dict[str, Any]]:
+    conn = get_conn()
+    rows = conn.execute("""
+        SELECT d.doc_id, d.title, d.doc_type, d.language, d.access_level,
+               d.ingested_at, d.issuer, d.issued_date, d.origin, d.source_path,
+               COUNT(c.clause_id) AS clause_count
+        FROM documents d
+        LEFT JOIN clauses c ON c.doc_id = d.doc_id AND c.status != 'deleted'
+        GROUP BY d.doc_id, d.title, d.doc_type, d.language, d.access_level,
+                 d.ingested_at, d.issuer, d.issued_date, d.origin, d.source_path
+        ORDER BY d.ingested_at DESC
+    """).fetchall()
+    return [
+        {
+            "doc_id": r[0],
+            "title": r[1] or r[9] or r[0],
+            "doc_type": r[2],
+            "language": r[3],
+            "access_level": r[4],
+            "ingested_at": str(r[5]) if r[5] else None,
+            "issuer": r[6],
+            "issued_date": str(r[7]) if r[7] else None,
+            "origin": r[8],
+            "source_path": r[9],
+            "clause_count": int(r[10]),
+        }
+        for r in rows
+    ]
+
+
 @app.post("/connectors/{name}/sync")
 def connector_sync(name: str, user: User = Depends(require_admin)) -> dict[str, str]:
     if not config.ENABLE_CONNECTORS:
