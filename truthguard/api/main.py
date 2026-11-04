@@ -35,9 +35,19 @@ _FAKE_USERS: dict[str, User] = {
 }
 
 
-def get_current_user(x_user: str | None = Header(default=None)) -> User:
+def get_current_user(
+    authorization: str | None = Header(default=None),
+    x_user: str | None = Header(default=None),
+) -> User:
     if config.ENABLE_SSO:
-        raise HTTPException(status_code=501, detail="SSO auth not yet implemented.")
+        if not authorization or not authorization.startswith("Bearer "):
+            raise HTTPException(status_code=401, detail="Bearer token required.")
+        token = authorization.removeprefix("Bearer ").strip()
+        try:
+            from truthguard.auth.token import verify_token
+            return verify_token(token)
+        except Exception as exc:
+            raise HTTPException(status_code=401, detail=f"Invalid token: {exc}") from exc
 
     if os.getenv("ENV") == "production":
         raise HTTPException(

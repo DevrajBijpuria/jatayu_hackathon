@@ -1,12 +1,111 @@
 {
   "realm": "truthguard",
-  "_comment": "Placeholder realm export. Replace with actual Keycloak realm export when SSO is implemented. See AGENTS.md §6 Phase 5 (SSO section).",
-  "groups": [
-    {"name": "tg-employees"},
-    {"name": "tg-compliance"},
-    {"name": "tg-board"}
-  ],
+  "enabled": true,
+  "loginWithEmailAllowed": true,
+  "registrationAllowed": false,
+  "bruteForceProtected": false,
+  "sslRequired": "external",
+  "accessTokenLifespan": 300,
   "clients": [
-    {"clientId": "truthguard-web"}
+    {
+      "clientId": "truthguard-web",
+      "name": "TruthGuard Web",
+      "enabled": true,
+      "publicClient": true,
+      "standardFlowEnabled": true,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": false,
+      "pkceCodeChallengeMethod": "S256",
+      "redirectUris": [
+        "http://localhost:3000/*",
+        "http://localhost:3000/api/auth/callback/keycloak"
+      ],
+      "webOrigins": ["http://localhost:3000"],
+      "defaultClientScopes": ["openid", "profile", "email", "groups"],
+      "optionalClientScopes": ["address", "phone"],
+      "protocolMappers": [
+        {
+          "name": "audience-truthguard-api",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "consentRequired": false,
+          "config": {
+            "included.client.audience": "truthguard-api",
+            "id.token.claim": "false",
+            "access.token.claim": "true"
+          }
+        }
+      ]
+    },
+    {
+      "clientId": "truthguard-api",
+      "name": "TruthGuard API",
+      "enabled": true,
+      "publicClient": false,
+      "bearerOnly": true,
+      "serviceAccountsEnabled": false,
+      "standardFlowEnabled": false,
+      "directAccessGrantsEnabled": false
+    }
+  ],
+  "clientScopes": [
+    {
+      "name": "groups",
+      "protocol": "openid-connect",
+      "attributes": {
+        "include.in.token.scope": "true",
+        "display.on.consent.screen": "false"
+      },
+      "protocolMappers": [
+        {
+          "name": "groups",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-group-membership-mapper",
+          "consentRequired": false,
+          "config": {
+            "full.path": "false",
+            "id.token.claim": "true",
+            "access.token.claim": "true",
+            "claim.name": "groups",
+            "userinfo.token.claim": "true"
+          }
+        }
+      ]
+    }
+  ],
+  "groups": [
+    {"name": "tg-employees", "path": "/tg-employees"},
+    {"name": "tg-compliance", "path": "/tg-compliance"},
+    {"name": "tg-board", "path": "/tg-board"}
+  ],
+  "users": [
+    {
+      "username": "employee1",
+      "enabled": true,
+      "email": "employee1@truthguard.local",
+      "firstName": "Demo",
+      "lastName": "Employee",
+      "groups": ["/tg-employees"],
+      "credentials": [{"type": "password", "value": "demo", "temporary": false}]
+    },
+    {
+      "username": "compliance1",
+      "enabled": true,
+      "email": "compliance1@truthguard.local",
+      "firstName": "Demo",
+      "lastName": "Compliance",
+      "groups": ["/tg-compliance"],
+      "credentials": [{"type": "password", "value": "demo", "temporary": false}]
+    },
+    {
+      "username": "board1",
+      "enabled": true,
+      "email": "board1@truthguard.local",
+      "firstName": "Demo",
+      "lastName": "Board",
+      "groups": ["/tg-board"],
+      "credentials": [{"type": "password", "value": "demo", "temporary": false}]
+    }
   ]
 }
