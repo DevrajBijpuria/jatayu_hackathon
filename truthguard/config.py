@@ -38,6 +38,7 @@ ENABLE_CONNECTORS: bool = _bool("ENABLE_CONNECTORS", False)
 ENABLE_SSO: bool = _bool("ENABLE_SSO", False)
 
 # ── Connectors ────────────────────────────────────────────────────────────────
+INBOX_DIR: str = os.getenv("INBOX_DIR", "data/raw/inbox")
 MS_TENANT_ID: str = os.getenv("MS_TENANT_ID", "")
 MS_CLIENT_ID: str = os.getenv("MS_CLIENT_ID", "")
 MS_CLIENT_SECRET: str = os.getenv("MS_CLIENT_SECRET", "")

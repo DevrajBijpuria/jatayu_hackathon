@@ -5,6 +5,7 @@ Used by Phases 1-4. See AGENTS.md section 6 (Phase 1, tasks 5 and 12).
 from __future__ import annotations
 
 import re
+from datetime import date
 
 _DEVA_DIGITS = str.maketrans("०१२३४५६७८९", "0123456789")
 
@@ -114,3 +115,39 @@ def detect_language(text: str) -> str:
     if ratio < 0.2:
         return "en"
     return "mixed"
+
+
+# ---------------------------------------------------------------------------
+# Hindi date helpers
+# ---------------------------------------------------------------------------
+_HINDI_MONTHS: dict[str, int] = {
+    "जनवरी": 1, "फरवरी": 2, "फ़रवरी": 2, "मार्च": 3, "अप्रैल": 4,
+    "मई": 5, "जून": 6, "जुलाई": 7, "अगस्त": 8,
+    "सितंबर": 9, "सितम्बर": 9, "अक्टूबर": 10, "अक्तूबर": 10,
+    "नवंबर": 11, "दिसंबर": 12,
+}
+
+
+def parse_hindi_date(text: str) -> date | None:
+    """Parse a date with a Hindi month name, e.g. '15 जनवरी 2024'."""
+    text_norm = text.strip().translate(_DEVA_DIGITS)
+    for month_name, month_num in _HINDI_MONTHS.items():
+        m = re.search(r"(\d{1,2})\s+" + re.escape(month_name) + r"\s+(\d{4})", text_norm)
+        if m:
+            try:
+                return date(int(m.group(2)), month_num, int(m.group(1)))
+            except ValueError:
+                continue
+    return None
+
+
+# ---------------------------------------------------------------------------
+# Devanagari quality check (OCR fallback trigger)
+# ---------------------------------------------------------------------------
+def is_devanagari_quality_ok(text: str) -> bool:
+    """True if text has ≥50% Devanagari alpha chars; False signals legacy-font garbling."""
+    devanagari = len(re.findall(r"[ऀ-ॿ]", text))
+    alpha = len(re.findall(r"[a-zA-Zऀ-ॿ]", text))
+    if alpha == 0:
+        return True  # no alphabetic content to judge — not garbled
+    return devanagari / alpha >= 0.5

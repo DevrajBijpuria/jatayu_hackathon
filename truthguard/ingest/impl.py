@@ -28,7 +28,12 @@ from pydantic import BaseModel
 
 from truthguard import config
 from truthguard.db.conn import get_conn
-from truthguard.lang import detect_language, grounding_check
+from truthguard.lang import (
+    detect_language,
+    grounding_check,
+    is_devanagari_quality_ok,
+    parse_hindi_date,
+)
 
 # ---------------------------------------------------------------------------
 # Lazy ML model holders
@@ -74,10 +79,28 @@ def _has_llm() -> bool:
 # Task 1: Parsers
 # ---------------------------------------------------------------------------
 
+def _ocr_page(page) -> str:
+    """OCR a pdfplumber page via pytesseract (graceful no-op if unavailable)."""
+    try:
+        import pytesseract  # type: ignore
+        img = page.to_image(resolution=150).original
+        return pytesseract.image_to_string(img, lang="hin+eng")
+    except Exception:
+        return ""
+
+
 def _parse_pdf(path: Path) -> str:
     import pdfplumber  # type: ignore
+    pages: list[str] = []
     with pdfplumber.open(path) as pdf:
-        return "\n".join(p.extract_text() or "" for p in pdf.pages)
+        for page in pdf.pages:
+            text = page.extract_text() or ""
+            if config.ENABLE_HINDI and not is_devanagari_quality_ok(text):
+                ocr_text = _ocr_page(page)
+                if ocr_text.strip():
+                    text = ocr_text
+            pages.append(text)
+    return "\n".join(pages)
 
 
 def _parse_docx(path: Path) -> str:
@@ -134,6 +157,7 @@ _META_FIELDS = {
         re.IGNORECASE,
     ),
     "doc_type": re.compile(r"Document\s+Type\s*:\s*(.+)", re.IGNORECASE),
+    "translation_of": re.compile(r"Translation\s+Of\s*:\s*(.+)", re.IGNORECASE),
 }
 
 _DATE_FMTS = ["%Y-%m-%d", "%d/%m/%Y", "%d-%m-%Y", "%d.%m.%Y", "%d %B %Y", "%d %b %Y"]
@@ -165,6 +189,8 @@ def _extract_doc_meta(path: Path, text: str) -> dict[str, Any]:
 
     issued_str = meta.pop("issued", None)
     meta["issued_date"] = _parse_date(issued_str) if issued_str else None
+    if meta["issued_date"] is None and issued_str and config.ENABLE_HINDI:
+        meta["issued_date"] = parse_hindi_date(issued_str)
 
     if meta["issued_date"] is None:
         m2 = re.search(r"(\d{4})-(\d{2})-(\d{2})", path.stem)
@@ -173,6 +199,12 @@ def _extract_doc_meta(path: Path, text: str) -> dict[str, Any]:
                 meta["issued_date"] = date(int(m2.group(1)), int(m2.group(2)), int(m2.group(3)))
             except ValueError:
                 pass
+
+    translation_of_raw = meta.pop("translation_of", None)
+    meta["translation_of"] = (
+        re.sub(r"[^A-Z0-9\-/]", "-", translation_of_raw.upper()).strip("-")
+        if translation_of_raw else None
+    )
 
     meta.setdefault("issuer", None)
     meta.setdefault("doc_type", "policy")
@@ -250,7 +282,7 @@ def _dedupe(clauses: list[dict]) -> list[dict]:
 
 
 # ---------------------------------------------------------------------------
-# Task 3: Injection guard (English regex only)
+# Task 3: Injection guard (English + Hindi)
 # ---------------------------------------------------------------------------
 _INJECTION_RX = re.compile(
     r"ignore\s+(all\s+)?previous\s+instructions?"
@@ -258,7 +290,10 @@ _INJECTION_RX = re.compile(
     r"|\bsystem\s+prompt\b"
     r"|disregard\s+(all\s+)?instructions?"
     r"|forget\s+(all\s+)?previous"
-    r"|do\s+not\s+follow\s+(your\s+)?previous",
+    r"|do\s+not\s+follow\s+(your\s+)?previous"
+    # Hindi injection patterns
+    r"|पिछले\s+निर्देश(?:ों)?\s+(?:को\s+)?(?:अनदेखा|नज़रअंदाज़)\s+कर"
+    r"|सभी\s+निर्देश\s+भूल\s+जाओ",
     re.IGNORECASE,
 )
 
@@ -352,6 +387,9 @@ _SUPER_PATTERNS = [
         r"in\s+supersession\s+of\s+(?:circular|notification|master\s+circular)\s*(?:no\.?)?\s*([A-Z][A-Z0-9\-/\.]+)",
         re.IGNORECASE,
     ),
+    # Hindi supersession patterns
+    re.compile(r"(?:परिपत्र\s+)?([A-Z][A-Z0-9\-/\.]{3,})\s+के\s+अधिक्रमण\s+में"),
+    re.compile(r"(?:को\s+)?प्रतिस्थापित\s+किया"),
 ]
 
 
@@ -570,9 +608,25 @@ def _rebuild_indexes(conn) -> None:
 # ---------------------------------------------------------------------------
 # Task 10: Conflict pre-index
 # ---------------------------------------------------------------------------
+def _are_translation_partners(conn, doc_a: str, doc_b: str) -> bool:
+    """True when doc_a and doc_b are mutual translation partners."""
+    row = conn.execute(
+        "SELECT 1 FROM documents WHERE doc_id = ? AND translation_of = ?",
+        [doc_a, doc_b],
+    ).fetchone()
+    if row:
+        return True
+    row = conn.execute(
+        "SELECT 1 FROM documents WHERE doc_id = ? AND translation_of = ?",
+        [doc_b, doc_a],
+    ).fetchone()
+    return bool(row)
+
+
 def _rebuild_conflict_index(conn) -> None:
     conn.execute("DELETE FROM conflicts")
 
+    # SQL-level exclusion: skip pairs where one doc's translation_of = the other doc
     conn.execute("""
         INSERT OR IGNORE INTO conflicts
             (conflict_id, clause_a, clause_b, kind, score)
@@ -587,30 +641,41 @@ def _rebuild_conflict_index(conn) -> None:
           ON  a.concept_id = b.concept_id
          AND  coalesce(a.subject, '') = coalesce(b.subject, '')
          AND  a.clause_id < b.clause_id
+        JOIN documents da ON da.doc_id = a.doc_id
+        JOIN documents db ON db.doc_id = b.doc_id
         WHERE a.status = 'active'
           AND b.status = 'active'
           AND a.value_num IS NOT NULL
           AND b.value_num IS NOT NULL
           AND a.value_num <> b.value_num
+          AND NOT (coalesce(da.translation_of, '') = b.doc_id
+               OR  coalesce(db.translation_of, '') = a.doc_id)
     """)
 
     nli = _get_nli()
     if nli is None:
         return
     pairs = conn.execute("""
-        SELECT a.clause_id, a.source_text, b.clause_id, b.source_text
+        SELECT a.clause_id, a.source_text, b.clause_id, b.source_text, a.doc_id, b.doc_id
         FROM clauses a
         JOIN clauses b
           ON  a.concept_id = b.concept_id
          AND  a.clause_id < b.clause_id
          AND  a.doc_id <> b.doc_id
+        JOIN documents da ON da.doc_id = a.doc_id
+        JOIN documents db ON db.doc_id = b.doc_id
         WHERE a.status = 'active'
           AND b.status = 'active'
           AND a.value_num IS NULL
           AND b.value_num IS NULL
+          AND NOT (coalesce(da.translation_of, '') = b.doc_id
+               OR  coalesce(db.translation_of, '') = a.doc_id)
     """).fetchall()
 
-    for a_id, a_txt, b_id, b_txt in pairs:
+    for a_id, a_txt, b_id, b_txt, doc_a, doc_b in pairs:
+        # Python-level double-check for translation partners
+        if _are_translation_partners(conn, doc_a, doc_b):
+            continue
         try:
             result = nli(f"{a_txt} [SEP] {b_txt}")[0]
             scores = {r["label"]: r["score"] for r in result}
@@ -623,6 +688,192 @@ def _rebuild_conflict_index(conn) -> None:
                 )
         except Exception:
             pass
+
+
+# ---------------------------------------------------------------------------
+# Bilingual document splitter (Task 12 Hindi)
+# ---------------------------------------------------------------------------
+_BILINGUAL_SEP = re.compile(
+    r"^-{3,}\s*(?:ENGLISH\s+VERSION|हिन्दी\s+संस्करण|HINDI\s+VERSION)\s*-{3,}\s*$",
+    re.MULTILINE | re.IGNORECASE,
+)
+
+
+def _split_bilingual(text: str) -> tuple[str, str] | None:
+    """Return (english_text, hindi_text) if doc contains both language sections, else None."""
+    parts = _BILINGUAL_SEP.split(text)
+    if len(parts) < 3:
+        return None
+    # parts[0] is preamble (before first separator); content sections are parts[1:]
+    sections = [p.strip() for p in parts[1:] if p.strip()]
+    en_parts = [p for p in sections if not re.search(r"[ऀ-ॿ]", p)]
+    hi_parts = [p for p in sections if re.search(r"[ऀ-ॿ]", p)]
+    if not en_parts or not hi_parts:
+        return None
+    return en_parts[0], hi_parts[0]
+
+
+def _unique_doc_id(conn, candidate: str) -> str:
+    base_id, counter = candidate, 1
+    doc_id = candidate
+    while conn.execute("SELECT 1 FROM documents WHERE doc_id = ?", [doc_id]).fetchone():
+        doc_id = f"{base_id}-{counter}"
+        counter += 1
+    return doc_id
+
+
+def _process_one(
+    conn,
+    p: Path,
+    text: str,
+    access_level: str,
+    doc_id_override: str | None = None,
+    translation_of: str | None = None,
+) -> str | None:
+    """Insert one document + its clauses. Returns doc_id or None on error."""
+    content_hash = _sha256(text)
+    existing = conn.execute(
+        "SELECT doc_id FROM documents WHERE content_hash = ?", [content_hash]
+    ).fetchone()
+    if existing:
+        return existing[0]
+
+    meta = _extract_doc_meta(p, text)
+    lang = detect_language(text)
+
+    doc_id = _unique_doc_id(conn, doc_id_override or meta["doc_id"])
+    meta["doc_id"] = doc_id
+
+    # Merge translation_of: explicit arg wins over header
+    effective_translation_of = translation_of or meta.get("translation_of")
+
+    if _is_injected(text):
+        conn.execute(
+            "INSERT INTO documents"
+            " (doc_id, title, source_path, doc_type, language, content_hash,"
+            "  issuer, issued_date, access_level, injection_flag, translation_of)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, TRUE, ?)",
+            [
+                doc_id, meta.get("title", p.stem), str(p),
+                meta.get("doc_type", "policy"), lang, content_hash,
+                meta.get("issuer"), meta.get("issued_date"), access_level,
+                effective_translation_of,
+            ],
+        )
+        _add_review(conn, None, "injection_flag", item_id=f"inj-{doc_id}")
+        return doc_id
+
+    conn.execute(
+        "INSERT INTO documents"
+        " (doc_id, title, source_path, doc_type, language, content_hash,"
+        "  issuer, issued_date, access_level, injection_flag, translation_of)"
+        " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, FALSE, ?)",
+        [
+            doc_id, meta.get("title", p.stem), str(p),
+            meta.get("doc_type", "policy"), lang, content_hash,
+            meta.get("issuer"), meta.get("issued_date"), access_level,
+            effective_translation_of,
+        ],
+    )
+
+    if meta.get("issued_date") is None:
+        _add_review(conn, None, "missing_date", missing_fields="issued_date",
+                    item_id=f"md-{doc_id}")
+    if not meta.get("issuer"):
+        _add_review(conn, None, "missing_issuer", missing_fields="issuer",
+                    item_id=f"mi-{doc_id}")
+
+    raw_clauses = _split_clauses(text, doc_id)
+
+    for rc in raw_clauses:
+        cid = rc["clause_id"]
+        src = rc["source_text"]
+        clause_lang = detect_language(src)
+
+        extracted = _llm_extract(
+            cid, src, meta.get("issuer"), meta.get("issued_date"), meta.get("doc_type", "policy")
+        )
+
+        value_num: float | None = extracted.get("value_num")
+        eff_date_str: str | None = extracted.get("effective_date")
+        extract_conf: float | None = None
+        status = "active"
+
+        if value_num is not None:
+            if grounding_check(value_num, src):
+                second = _llm_extract_check(cid, src, extracted)
+                if second:
+                    agree = (
+                        second.get("value_num") == value_num
+                        and second.get("effective_date") == eff_date_str
+                        and second.get("scope") == extracted.get("scope")
+                    )
+                    extract_conf = 1.0 if agree else 0.5
+                    if not agree:
+                        status = "needs_review"
+                        _add_review(conn, cid, "extraction_disagreement")
+                else:
+                    extract_conf = 1.0
+            else:
+                extracted2 = _llm_extract(
+                    cid, src, meta.get("issuer"), meta.get("issued_date"), meta.get("doc_type", "policy")
+                )
+                value_num2 = extracted2.get("value_num")
+                if value_num2 is not None and grounding_check(value_num2, src):
+                    extracted, value_num = extracted2, value_num2
+                    eff_date_str = extracted2.get("effective_date")
+                    extract_conf = 1.0
+                else:
+                    value_num = None
+                    status = "needs_review"
+                    extract_conf = 0.0
+                    _add_review(conn, cid, "grounding_failed")
+
+        effective_date = _parse_date(eff_date_str) if eff_date_str else meta.get("issued_date")
+
+        super_refs = _find_supersession_refs(src)
+
+        concept_id = _map_concept(conn, extracted.get("concept") or "")
+
+        issuer = extracted.get("issuer") or meta.get("issuer")
+        authority_rank: int | None = None
+        if issuer:
+            row = conn.execute(
+                "SELECT authority_rank FROM authority_config WHERE issuer = ?", [issuer]
+            ).fetchone()
+            if row:
+                authority_rank = row[0]
+
+        conn.execute(
+            "INSERT OR IGNORE INTO clauses"
+            " (clause_id, doc_id, section, source_text, language, text_en,"
+            "  concept_id, subject, clause_type, value_num, value_unit, value_text,"
+            "  condition_text, scope, issuer, authority_rank, effective_date,"
+            "  access_level, extract_conf, status)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            [
+                cid, doc_id, rc["section"], src, clause_lang,
+                extracted.get("text_en"),
+                concept_id,
+                extracted.get("subject"),
+                extracted.get("clause_type"),
+                value_num,
+                extracted.get("value_unit"),
+                extracted.get("value_text"),
+                extracted.get("condition_text"),
+                extracted.get("scope") or "*",
+                issuer,
+                authority_rank,
+                effective_date,
+                access_level,
+                extract_conf,
+                status,
+            ],
+        )
+
+        _resolve_supersession(conn, cid, super_refs)
+
+    return doc_id
 
 
 # ---------------------------------------------------------------------------
@@ -650,163 +901,32 @@ def run(paths: list[str], access_level: str = "all") -> list[str]:
             print(f"[ingest] skipping {p.name}: {exc}")
             continue
 
-        content_hash = _sha256(text)
+        # Task 12: Bilingual document splitting
+        if config.ENABLE_HINDI:
+            bilingual = _split_bilingual(text)
+        else:
+            bilingual = None
 
-        # Dedupe by content hash
-        existing = conn.execute(
-            "SELECT doc_id FROM documents WHERE content_hash = ?", [content_hash]
-        ).fetchone()
-        if existing:
-            doc_ids.append(existing[0])
-            continue
-
-        meta = _extract_doc_meta(p, text)
-        lang = detect_language(text)
-
-        # Ensure unique doc_id
-        doc_id = meta["doc_id"]
-        base_id, counter = doc_id, 1
-        while conn.execute("SELECT 1 FROM documents WHERE doc_id = ?", [doc_id]).fetchone():
-            doc_id = f"{base_id}-{counter}"
-            counter += 1
-        meta["doc_id"] = doc_id
-
-        # Task 3: Injection guard -- store flagged, do not index clauses
-        if _is_injected(text):
-            conn.execute(
-                "INSERT INTO documents"
-                " (doc_id, title, source_path, doc_type, language, content_hash,"
-                "  issuer, issued_date, access_level, injection_flag)"
-                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, TRUE)",
-                [
-                    doc_id, meta.get("title", p.stem), str(p),
-                    meta.get("doc_type", "policy"), lang, content_hash,
-                    meta.get("issuer"), meta.get("issued_date"), access_level,
-                ],
-            )
-            _add_review(conn, None, "injection_flag", item_id=f"inj-{doc_id}")
-            doc_ids.append(doc_id)
-            continue
-
-        # Task 1: Store document row
-        conn.execute(
-            "INSERT INTO documents"
-            " (doc_id, title, source_path, doc_type, language, content_hash,"
-            "  issuer, issued_date, access_level, injection_flag)"
-            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, FALSE)",
-            [
-                doc_id, meta.get("title", p.stem), str(p),
-                meta.get("doc_type", "policy"), lang, content_hash,
-                meta.get("issuer"), meta.get("issued_date"), access_level,
-            ],
-        )
-
-        if meta.get("issued_date") is None:
-            _add_review(conn, None, "missing_date", missing_fields="issued_date",
-                        item_id=f"md-{doc_id}")
-        if not meta.get("issuer"):
-            _add_review(conn, None, "missing_issuer", missing_fields="issuer",
-                        item_id=f"mi-{doc_id}")
-
-        # Task 2: Split into clauses
-        raw_clauses = _split_clauses(text, doc_id)
-
-        # Tasks 4-8: Extract fields per clause
-        for rc in raw_clauses:
-            cid = rc["clause_id"]
-            src = rc["source_text"]
-            clause_lang = detect_language(src)
-
-            # Task 4: LLM extraction (empty dict if no API key)
-            extracted = _llm_extract(
-                cid, src, meta.get("issuer"), meta.get("issued_date"), meta.get("doc_type", "policy")
-            )
-
-            value_num: float | None = extracted.get("value_num")
-            eff_date_str: str | None = extracted.get("effective_date")
-            extract_conf: float | None = None
-            status = "active"
-
-            # Task 5: Grounding check
-            if value_num is not None:
-                if grounding_check(value_num, src):
-                    # Task 6: Second extraction + agreement check
-                    second = _llm_extract_check(cid, src, extracted)
-                    if second:
-                        agree = (
-                            second.get("value_num") == value_num
-                            and second.get("effective_date") == eff_date_str
-                            and second.get("scope") == extracted.get("scope")
-                        )
-                        extract_conf = 1.0 if agree else 0.5
-                        if not agree:
-                            status = "needs_review"
-                            _add_review(conn, cid, "extraction_disagreement")
-                    else:
-                        extract_conf = 1.0
-                else:
-                    # Retry once
-                    extracted2 = _llm_extract(
-                        cid, src, meta.get("issuer"), meta.get("issued_date"), meta.get("doc_type", "policy")
-                    )
-                    value_num2 = extracted2.get("value_num")
-                    if value_num2 is not None and grounding_check(value_num2, src):
-                        extracted, value_num = extracted2, value_num2
-                        eff_date_str = extracted2.get("effective_date")
-                        extract_conf = 1.0
-                    else:
-                        value_num = None
-                        status = "needs_review"
-                        extract_conf = 0.0
-                        _add_review(conn, cid, "grounding_failed")
-
-            effective_date = _parse_date(eff_date_str) if eff_date_str else meta.get("issued_date")
-
-            # Task 7: Supersession in source text
-            super_refs = _find_supersession_refs(src)
-
-            # Task 8: Concept mapping
-            concept_id = _map_concept(conn, extracted.get("concept") or "")
-
-            issuer = extracted.get("issuer") or meta.get("issuer")
-            authority_rank: int | None = None
-            if issuer:
-                row = conn.execute(
-                    "SELECT authority_rank FROM authority_config WHERE issuer = ?", [issuer]
-                ).fetchone()
-                if row:
-                    authority_rank = row[0]
-
-            conn.execute(
-                "INSERT OR IGNORE INTO clauses"
-                " (clause_id, doc_id, section, source_text, language, text_en,"
-                "  concept_id, subject, clause_type, value_num, value_unit, value_text,"
-                "  condition_text, scope, issuer, authority_rank, effective_date,"
-                "  access_level, extract_conf, status)"
-                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                [
-                    cid, doc_id, rc["section"], src, clause_lang,
-                    extracted.get("text_en"),
-                    concept_id,
-                    extracted.get("subject"),
-                    extracted.get("clause_type"),
-                    value_num,
-                    extracted.get("value_unit"),
-                    extracted.get("value_text"),
-                    extracted.get("condition_text"),
-                    extracted.get("scope") or "*",
-                    issuer,
-                    authority_rank,
-                    effective_date,
-                    access_level,
-                    extract_conf,
-                    status,
-                ],
-            )
-
-            _resolve_supersession(conn, cid, super_refs)
-
-        doc_ids.append(doc_id)
+        if bilingual is not None:
+            en_text, hi_text = bilingual
+            # Derive IDs for each sub-document
+            meta_check = _extract_doc_meta(p, text)
+            base_id = meta_check["doc_id"]
+            en_id = _unique_doc_id(conn, f"{base_id}-EN")
+            hi_id = _unique_doc_id(conn, f"{base_id}-HI")
+            # Ingest English half; translation_of points to Hindi partner (linked)
+            d_en = _process_one(conn, p, en_text, access_level, doc_id_override=en_id,
+                                translation_of=hi_id)
+            # Ingest Hindi half; translation_of points to English partner
+            d_hi = _process_one(conn, p, hi_text, access_level, doc_id_override=hi_id,
+                                translation_of=en_id)
+            for d in (d_en, d_hi):
+                if d:
+                    doc_ids.append(d)
+        else:
+            d = _process_one(conn, p, text, access_level)
+            if d:
+                doc_ids.append(d)
 
     # Tasks 9-10: Rebuild indexes after all docs ingested
     _rebuild_indexes(conn)
