@@ -1,57 +1,59 @@
-"""Shared language helpers — number normaliser, language detection.
+"""Shared language helpers for number normalisation, grounding checks, and language detection.
 
-Used by Phases 1–4. See AGENTS.md §6 (Phase 1, tasks 12 and 5).
+Used by Phases 1-4. See AGENTS.md section 6 (Phase 1, tasks 5 and 12).
 """
 from __future__ import annotations
 
 import re
+from datetime import date
 
-# Devanagari digit map
 _DEVA_DIGITS = str.maketrans("०१२३४५६७८९", "0123456789")
 
-# Hindi number words (extend as needed)
 _HINDI_WORDS: dict[str, float] = {
     "एक": 1, "दो": 2, "तीन": 3, "चार": 4, "पाँच": 5, "पांच": 5,
     "छह": 6, "छः": 6, "सात": 7, "आठ": 8, "नौ": 9, "दस": 10,
+    "ग्यारह": 11, "बारह": 12, "तेरह": 13, "चौदह": 14, "पंद्रह": 15,
+    "सोलह": 16, "सत्रह": 17, "अठारह": 18, "उन्नीस": 19,
     "बीस": 20, "तीस": 30, "चालीस": 40, "पचास": 50,
     "साठ": 60, "सत्तर": 70, "अस्सी": 80, "नब्बे": 90,
     "सौ": 100, "हज़ार": 1_000, "हजार": 1_000,
-    "लाख": 100_000, "करोड़": 10_000_000,
+    "लाख": 100_000, "करोड़": 10_000_000, "करोड": 10_000_000,
 }
+
+_NUM_PATTERNS = [
+    re.compile(
+        r"(?:[₹$€£]|Rs\.?\s*|INR\s*|रु\.?\s*|रुपये?\s*)?"
+        r"\d{1,3}(?:,\d{2,3})+"
+        r"(?:\.\d+)?",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"(?:[₹$€£]|Rs\.?\s*|INR\s*|रु\.?\s*|रुपये?\s*)?"
+        r"\d+(?:\.\d+)?"
+        r"(?:\s*(?:lakh|crore|k))?",
+        re.IGNORECASE,
+    ),
+]
 
 
 def normalise_number(text: str) -> float | None:
-    """Return the numeric value from a string, or None if it cannot be parsed.
-
-    Handles: plain integers, comma-grouped (Indian and Western), currency
-    prefixes (₹, Rs., $), Devanagari digits, Hindi number words, lakh/crore.
-    """
-    # Translate Devanagari digits
     text = text.translate(_DEVA_DIGITS).strip()
-
-    # Strip currency symbols
-    text = re.sub(r"[₹$€£]|Rs\.?\s*|INR\s*", "", text, flags=re.IGNORECASE).strip()
-
-    # Remove commas used as thousand separators (handles Indian lakhs too)
-    text_no_comma = text.replace(",", "")
-
-    # Plain number
+    text = re.sub(r"[₹$€£]|Rs\.?\s*|INR\s*|रु\.?\s*|रुपये?\s*", "", text, flags=re.IGNORECASE).strip()
+    text_nc = text.replace(",", "")
     try:
-        return float(text_no_comma)
+        return float(text_nc)
     except ValueError:
         pass
-
-    # "k" / "K" suffix
-    m = re.fullmatch(r"([\d.]+)\s*[kK]", text_no_comma)
+    m = re.fullmatch(r"([\d.]+)\s*[kK]", text_nc)
     if m:
         return float(m.group(1)) * 1_000
-
-    # Hindi number words: try to parse compound like "तीन हज़ार"
-    value = _parse_hindi_words(text)
-    if value is not None:
-        return value
-
-    return None
+    m = re.fullmatch(r"([\d.]+)\s*lakh", text_nc, re.IGNORECASE)
+    if m:
+        return float(m.group(1)) * 100_000
+    m = re.fullmatch(r"([\d.]+)\s*crore", text_nc, re.IGNORECASE)
+    if m:
+        return float(m.group(1)) * 10_000_000
+    return _parse_hindi_words(text)
 
 
 def _parse_hindi_words(text: str) -> float | None:
@@ -65,7 +67,6 @@ def _parse_hindi_words(text: str) -> float | None:
             continue
         matched = True
         if v >= 100:
-            # multiplier
             current = current * v if current else v
             if v >= 100_000:
                 total += current
@@ -74,6 +75,31 @@ def _parse_hindi_words(text: str) -> float | None:
             current += v
     result = total + current
     return result if matched else None
+
+
+def numbers_in_text(text: str) -> list[float]:
+    """Extract every distinct numeric value present in *text*, normalised."""
+    text_norm = text.translate(_DEVA_DIGITS)
+    found: set[float] = set()
+    for pat in _NUM_PATTERNS:
+        for m in pat.finditer(text_norm):
+            v = normalise_number(m.group(0))
+            if v is not None and v > 0:
+                found.add(v)
+    tokens = text.split()
+    for size in (3, 2, 1):
+        for start in range(len(tokens) - size + 1):
+            phrase = " ".join(tokens[start : start + size])
+            v = _parse_hindi_words(phrase)
+            if v is not None and v > 0:
+                found.add(v)
+    return list(found)
+
+
+def grounding_check(value_num: float, source_text: str) -> bool:
+    """Return True if *value_num* appears in *source_text* in any normalised form."""
+    nums = numbers_in_text(source_text)
+    return any(abs(n - value_num) < 0.01 for n in nums)
 
 
 def detect_language(text: str) -> str:
@@ -89,3 +115,39 @@ def detect_language(text: str) -> str:
     if ratio < 0.2:
         return "en"
     return "mixed"
+
+
+# ---------------------------------------------------------------------------
+# Hindi date helpers
+# ---------------------------------------------------------------------------
+_HINDI_MONTHS: dict[str, int] = {
+    "जनवरी": 1, "फरवरी": 2, "फ़रवरी": 2, "मार्च": 3, "अप्रैल": 4,
+    "मई": 5, "जून": 6, "जुलाई": 7, "अगस्त": 8,
+    "सितंबर": 9, "सितम्बर": 9, "अक्टूबर": 10, "अक्तूबर": 10,
+    "नवंबर": 11, "दिसंबर": 12,
+}
+
+
+def parse_hindi_date(text: str) -> date | None:
+    """Parse a date with a Hindi month name, e.g. '15 जनवरी 2024'."""
+    text_norm = text.strip().translate(_DEVA_DIGITS)
+    for month_name, month_num in _HINDI_MONTHS.items():
+        m = re.search(r"(\d{1,2})\s+" + re.escape(month_name) + r"\s+(\d{4})", text_norm)
+        if m:
+            try:
+                return date(int(m.group(2)), month_num, int(m.group(1)))
+            except ValueError:
+                continue
+    return None
+
+
+# ---------------------------------------------------------------------------
+# Devanagari quality check (OCR fallback trigger)
+# ---------------------------------------------------------------------------
+def is_devanagari_quality_ok(text: str) -> bool:
+    """True if text has ≥50% Devanagari alpha chars; False signals legacy-font garbling."""
+    devanagari = len(re.findall(r"[ऀ-ॿ]", text))
+    alpha = len(re.findall(r"[a-zA-Zऀ-ॿ]", text))
+    if alpha == 0:
+        return True  # no alphabetic content to judge — not garbled
+    return devanagari / alpha >= 0.5

@@ -11,8 +11,12 @@ CREATE TABLE IF NOT EXISTS documents (
   issued_date     DATE,                  -- NULL if unknown
   access_level    TEXT DEFAULT 'all',    -- all | compliance | board
   injection_flag  BOOLEAN DEFAULT FALSE,
+  translation_of  TEXT,                  -- doc_id of the partner translation (for bilingual docs)
   ingested_at     TIMESTAMP DEFAULT current_timestamp
 );
+
+-- Migration: add column to existing databases (no-op for new ones)
+ALTER TABLE documents ADD COLUMN IF NOT EXISTS translation_of TEXT;
 
 CREATE TABLE IF NOT EXISTS clauses (
   clause_id       TEXT PRIMARY KEY,      -- '<doc_id>#<section or n>', e.g. 'ACME-EXP-V1#4.2'
