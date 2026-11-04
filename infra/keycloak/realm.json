@@ -1,0 +1,12 @@
+{
+  "realm": "truthguard",
+  "_comment": "Placeholder realm export. Replace with actual Keycloak realm export when SSO is implemented. See AGENTS.md §6 Phase 5 (SSO section).",
+  "groups": [
+    {"name": "tg-employees"},
+    {"name": "tg-compliance"},
+    {"name": "tg-board"}
+  ],
+  "clients": [
+    {"clientId": "truthguard-web"}
+  ]
+}
