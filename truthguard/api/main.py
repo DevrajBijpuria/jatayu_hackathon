@@ -170,14 +170,65 @@ def review_queue(user: User = Depends(require_admin)) -> list[dict[str, Any]]:
     ]
 
 
+_REVIEW_ALLOWED_FIELDS = frozenset({
+    "effective_date", "authority_rank", "issuer", "value_num", "value_text", "value_unit",
+})
+
+
 @app.post("/review/{item_id}")
 def resolve_review_item(
     item_id: str,
     body: dict[str, Any],
     user: User = Depends(require_admin),
 ) -> dict[str, str]:
-    # TODO(phase5): real implementation — update clause fields, re-run conflict check
-    raise HTTPException(status_code=501, detail="Review resolution belongs to Phase 5.")
+    from datetime import datetime
+
+    conn = get_conn()
+    row = conn.execute(
+        "SELECT clause_id FROM review_queue WHERE item_id = ? AND resolved_at IS NULL",
+        [item_id],
+    ).fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="Review item not found or already resolved.")
+    clause_id: str = row[0]
+
+    updates = {k: v for k, v in body.items() if k in _REVIEW_ALLOWED_FIELDS}
+    if updates:
+        set_sql = ", ".join(f"{k} = ?" for k in updates)
+        conn.execute(
+            f"UPDATE clauses SET {set_sql} WHERE clause_id = ?",
+            list(updates.values()) + [clause_id],
+        )
+
+    # Grounding check if value changed
+    if "value_num" in updates:
+        from truthguard.lang import grounding_check
+        src = conn.execute("SELECT source_text FROM clauses WHERE clause_id = ?", [clause_id]).fetchone()
+        if src:
+            try:
+                val = float(updates["value_num"])
+                if not grounding_check(val, src[0]):
+                    conn.execute("UPDATE clauses SET status = 'needs_review' WHERE clause_id = ?", [clause_id])
+                    raise HTTPException(
+                        status_code=422,
+                        detail=f"Value {val} not found in source text. Clause flagged for review.",
+                    )
+            except HTTPException:
+                raise
+            except Exception:
+                pass
+
+    # Recompute conflicts for the concept
+    from truthguard.resolve.impl import _recompute_conflicts
+    concept_row = conn.execute("SELECT concept_id FROM clauses WHERE clause_id = ?", [clause_id]).fetchone()
+    if concept_row and concept_row[0]:
+        _recompute_conflicts(conn, concept_row[0])
+
+    conn.execute(
+        "UPDATE review_queue SET resolved_at = ?, resolved_by = ? WHERE item_id = ?",
+        [datetime.utcnow(), user.user_id, item_id],
+    )
+    return {"status": "resolved", "clause_id": clause_id}
 
 
 @app.get("/audit/{log_id}")
