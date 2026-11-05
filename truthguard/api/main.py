@@ -114,6 +114,7 @@ def ask(body: AskRequest, user: User = Depends(get_current_user)) -> AskResponse
 def ingest(
     files: list[UploadFile],
     access_level: str = "all",
+    force: bool = False,
     user: User = Depends(require_admin),
 ) -> dict[str, list[str]]:
     import tempfile
@@ -128,7 +129,7 @@ def ingest(
         dest.write_bytes(f.file.read())
         paths.append(str(dest))
 
-    doc_ids = ingest_phase.run(paths, access_level)
+    doc_ids = ingest_phase.run(paths, access_level, force=force)
     return {"doc_ids": doc_ids}
 
 

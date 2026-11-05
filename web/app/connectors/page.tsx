@@ -17,6 +17,7 @@ function UploadCard({ authHeaders }: { authHeaders: () => { Authorization: strin
   const fileRef = useRef<HTMLInputElement>(null);
   const [files, setFiles] = useState<File[]>([]);
   const [accessLevel, setAccessLevel] = useState<string>("all");
+  const [force, setForce] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [result, setResult] = useState<{ ok: boolean; msg: string } | null>(null);
 
@@ -28,7 +29,7 @@ function UploadCard({ authHeaders }: { authHeaders: () => { Authorization: strin
       const form = new FormData();
       files.forEach((f) => form.append("files", f));
       const auth = authHeaders();
-      const res = await fetch(`/api/tg/ingest?access_level=${accessLevel}`, {
+      const res = await fetch(`/api/tg/ingest?access_level=${accessLevel}&force=${force}`, {
         method: "POST",
         headers: auth,  // no Content-Type — browser sets multipart boundary
         body: form,
@@ -90,6 +91,16 @@ function UploadCard({ authHeaders }: { authHeaders: () => { Authorization: strin
           {uploading ? "Uploading…" : `Upload${files.length > 1 ? ` (${files.length})` : ""}`}
         </button>
       </div>
+
+      <label className="flex items-center gap-2 text-xs text-slate-500 cursor-pointer select-none">
+        <input
+          type="checkbox"
+          checked={force}
+          onChange={(e) => setForce(e.target.checked)}
+          className="rounded border-slate-300 text-indigo-600 focus:ring-indigo-500"
+        />
+        Re-ingest (overwrite if already ingested)
+      </label>
 
       {files.length > 0 && (
         <ul className="text-xs text-slate-500 space-y-0.5">

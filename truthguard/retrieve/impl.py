@@ -94,8 +94,13 @@ def _load_or_build_index(conn) -> tuple[Any, Any, list[str]]:
     if bm25_path.exists() and ids_path.exists():
         import pickle
         with open(bm25_path, "rb") as f:
-            bm25 = pickle.load(f)
-        clause_ids: list[str] = json.loads(ids_path.read_text())
+            _bm25_data = pickle.load(f)
+        if isinstance(_bm25_data, dict):
+            bm25 = _bm25_data["bm25"]
+            clause_ids: list[str] = _bm25_data.get("ids") or json.loads(ids_path.read_text())
+        else:
+            bm25 = _bm25_data
+            clause_ids = json.loads(ids_path.read_text())
 
         faiss_index = None
         faiss_path = idx / "faiss.index"

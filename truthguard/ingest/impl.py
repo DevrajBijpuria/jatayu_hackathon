@@ -103,6 +103,59 @@ def _parse_pdf(path: Path) -> str:
     return "\n".join(pages)
 
 
+def _pdf_table_clauses(path: Path, doc_id: str) -> list[dict[str, str]]:
+    """One clause per table row: 'Header: value | Header: value …'
+
+    This keeps table amounts and labels together so the LLM can read the right
+    row instead of a sentence-split blob where column values bleed together.
+    """
+    try:
+        import pdfplumber  # type: ignore
+    except ImportError:
+        return []
+    clauses: list[dict[str, str]] = []
+    try:
+        with pdfplumber.open(path) as pdf:
+            for pg_num, page in enumerate(pdf.pages, 1):
+                tables = page.extract_tables() or []
+                for t_idx, table in enumerate(tables):
+                    rows = [
+                        [str(c).strip() if c else "" for c in row]
+                        for row in (table or [])
+                        if any(c for c in row)
+                    ]
+                    if not rows:
+                        continue
+                    # First row is header when none of its cells are purely numeric
+                    first = rows[0]
+                    if first and all(
+                        not re.fullmatch(r"\d+\.?\d*", c) for c in first if c
+                    ):
+                        headers, data_rows = first, rows[1:]
+                    else:
+                        headers = [f"Col{i + 1}" for i in range(len(first))]
+                        data_rows = rows
+                    for r_idx, row in enumerate(data_rows):
+                        parts = [
+                            f"{h}: {v}"
+                            for h, v in zip(headers, row)
+                            if h and v
+                        ]
+                        if not parts:
+                            continue
+                        text = " | ".join(parts)
+                        if len(text) < 15:
+                            continue
+                        clauses.append({
+                            "clause_id": f"{doc_id}#P{pg_num}T{t_idx + 1}R{r_idx + 1}",
+                            "section": f"P{pg_num}T{t_idx + 1}",
+                            "source_text": text,
+                        })
+    except Exception:
+        pass
+    return clauses
+
+
 def _parse_docx(path: Path) -> str:
     import docx  # type: ignore
     doc = docx.Document(str(path))
@@ -479,6 +532,20 @@ _CONCEPT_SEEDS = [
      "pf withdrawal;epf withdrawal;provident fund withdrawal"),
     ("expense_approval_process", "Expense approval process",
      "approval process;how to approve;expense management system;submit expense report"),
+    ("children_appreciation_scheme", "Financial assistance or appreciation for children of staff",
+     "appreciation children;children subordinate staff;children employees;meritorious children;"
+     "financial assistance children;scholarship children;award children;child scheme;children scheme;"
+     "children welfare;child welfare staff"),
+    ("staff_welfare_scheme", "Staff welfare scheme or benefit",
+     "staff welfare;employee welfare;subordinate staff;welfare scheme;welfare fund;"
+     "welfare benefit;staff benefit;employee benefit scheme"),
+    ("medical_reimbursement", "Medical reimbursement or medical allowance",
+     "medical reimbursement;medical allowance;medical benefit;hospitalisation;hospital expense;"
+     "medical claim;health benefit"),
+    ("house_building_advance", "House building advance or housing loan",
+     "house building advance;hba;housing loan;home loan advance"),
+    ("leave_travel_concession", "Leave travel concession",
+     "leave travel concession;ltc;travel concession;leave travel"),
 ]
 
 _AUTHORITY_SEEDS = [
@@ -494,8 +561,6 @@ _AUTHORITY_SEEDS = [
 
 
 def _seed_concepts(conn) -> None:
-    if conn.execute("SELECT COUNT(*) FROM concepts").fetchone()[0] > 0:
-        return
     for cid, label, synonyms in _CONCEPT_SEEDS:
         conn.execute(
             "INSERT OR IGNORE INTO concepts (concept_id, label, synonyms) VALUES (?, ?, ?)",
@@ -600,7 +665,7 @@ def _rebuild_indexes(conn) -> None:
         idx = faiss.IndexFlatIP(embeddings.shape[1])
         idx.add(embeddings.astype(np.float32))
         faiss.write_index(idx, str(idx_dir / "faiss.index"))
-        (idx_dir / "faiss_ids.json").write_text(json.dumps(ids), encoding="utf-8")
+        (idx_dir / "clause_ids.json").write_text(json.dumps(ids), encoding="utf-8")
     except Exception:
         pass
 
@@ -729,6 +794,7 @@ def _process_one(
     access_level: str,
     doc_id_override: str | None = None,
     translation_of: str | None = None,
+    force: bool = False,
 ) -> str | None:
     """Insert one document + its clauses. Returns doc_id or None on error."""
     content_hash = _sha256(text)
@@ -736,7 +802,12 @@ def _process_one(
         "SELECT doc_id FROM documents WHERE content_hash = ?", [content_hash]
     ).fetchone()
     if existing:
-        return existing[0]
+        if not force:
+            return existing[0]
+        # Force re-ingest: drop old clauses and document row, then re-process
+        old_id = existing[0]
+        conn.execute("DELETE FROM clauses WHERE doc_id = ?", [old_id])
+        conn.execute("DELETE FROM documents WHERE doc_id = ?", [old_id])
 
     meta = _extract_doc_meta(p, text)
     lang = detect_language(text)
@@ -784,6 +855,10 @@ def _process_one(
                     item_id=f"mi-{doc_id}")
 
     raw_clauses = _split_clauses(text, doc_id)
+    # For PDFs, also create one clause per table row so table amounts are
+    # retrievable without sentence-split bleed-through.
+    if p.suffix.lower() == ".pdf":
+        raw_clauses.extend(_pdf_table_clauses(p, doc_id))
 
     for rc in raw_clauses:
         cid = rc["clause_id"]
@@ -879,7 +954,7 @@ def _process_one(
 # ---------------------------------------------------------------------------
 # Task 11: run() -- the only public entry point
 # ---------------------------------------------------------------------------
-def run(paths: list[str], access_level: str = "all") -> list[str]:
+def run(paths: list[str], access_level: str = "all", force: bool = False) -> list[str]:
     """Ingest files at *paths*, populate the DB and indexes, return doc_ids."""
     from truthguard.config import ensure_dirs
     ensure_dirs()
@@ -909,22 +984,19 @@ def run(paths: list[str], access_level: str = "all") -> list[str]:
 
         if bilingual is not None:
             en_text, hi_text = bilingual
-            # Derive IDs for each sub-document
             meta_check = _extract_doc_meta(p, text)
             base_id = meta_check["doc_id"]
             en_id = _unique_doc_id(conn, f"{base_id}-EN")
             hi_id = _unique_doc_id(conn, f"{base_id}-HI")
-            # Ingest English half; translation_of points to Hindi partner (linked)
             d_en = _process_one(conn, p, en_text, access_level, doc_id_override=en_id,
-                                translation_of=hi_id)
-            # Ingest Hindi half; translation_of points to English partner
+                                translation_of=hi_id, force=force)
             d_hi = _process_one(conn, p, hi_text, access_level, doc_id_override=hi_id,
-                                translation_of=en_id)
+                                translation_of=en_id, force=force)
             for d in (d_en, d_hi):
                 if d:
                     doc_ids.append(d)
         else:
-            d = _process_one(conn, p, text, access_level)
+            d = _process_one(conn, p, text, access_level, force=force)
             if d:
                 doc_ids.append(d)
 
