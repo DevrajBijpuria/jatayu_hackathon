@@ -117,3 +117,6 @@ export const getConnectors = (auth: AuthHeaders) =>
 
 export const syncConnector = (name: string, auth: AuthHeaders) =>
   apiFetch<{ status: string }>(`/connectors/${name}/sync`, auth, { method: "POST" });
+
+export const deleteDocument = (docId: string, auth: AuthHeaders) =>
+  apiFetch<{ status: string; doc_id: string }>(`/documents/${docId}`, auth, { method: "DELETE" });

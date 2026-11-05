@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { getDocuments, type IngestedDoc } from "@/lib/api";
+import { getDocuments, deleteDocument, type IngestedDoc } from "@/lib/api";
 import { useUser } from "@/lib/user-context";
 
 const ACCESS_BADGE: Record<string, string> = {
@@ -42,6 +42,7 @@ export default function DocumentsPage() {
   const [error, setError] = useState<string | null>(null);
   const [view, setView] = useState<ViewMode>("table");
   const [filter, setFilter] = useState("");
+  const [deleting, setDeleting] = useState<string | null>(null);
 
   useEffect(() => {
     getDocuments(authHeaders())
@@ -50,6 +51,19 @@ export default function DocumentsPage() {
       .finally(() => setLoading(false));
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  async function handleDelete(docId: string) {
+    if (!confirm(`Delete document "${docId}" and all its clauses? This cannot be undone.`)) return;
+    setDeleting(docId);
+    try {
+      await deleteDocument(docId, authHeaders());
+      setDocs((prev) => prev.filter((d) => d.doc_id !== docId));
+    } catch (e: unknown) {
+      alert(e instanceof Error ? e.message : "Delete failed");
+    } finally {
+      setDeleting(null);
+    }
+  }
 
   if (!isAdmin) {
     return (
@@ -126,6 +140,7 @@ export default function DocumentsPage() {
                   <th className="px-4 py-3 font-semibold text-slate-600 text-xs uppercase tracking-wide">Issued</th>
                   <th className="px-4 py-3 font-semibold text-slate-600 text-xs uppercase tracking-wide text-center">Clauses</th>
                   <th className="px-4 py-3 font-semibold text-slate-600 text-xs uppercase tracking-wide">Ingested</th>
+                  <th className="px-4 py-3"></th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100">
@@ -157,6 +172,16 @@ export default function DocumentsPage() {
                     </td>
                     <td className="px-4 py-3 text-slate-400 text-xs whitespace-nowrap">
                       {fmtTime(doc.ingested_at)}
+                    </td>
+                    <td className="px-4 py-3">
+                      <button
+                        onClick={() => handleDelete(doc.doc_id)}
+                        disabled={deleting === doc.doc_id}
+                        className="text-xs text-red-500 hover:text-red-700 disabled:opacity-40 font-medium"
+                        title="Delete document and all its clauses"
+                      >
+                        {deleting === doc.doc_id ? "…" : "Delete"}
+                      </button>
                     </td>
                   </tr>
                 ))}
@@ -202,6 +227,13 @@ export default function DocumentsPage() {
                 </p>
                 <p className="text-slate-400">Added {fmt(doc.ingested_at)}</p>
               </div>
+              <button
+                onClick={() => handleDelete(doc.doc_id)}
+                disabled={deleting === doc.doc_id}
+                className="w-full text-xs text-red-500 hover:text-red-700 disabled:opacity-40 font-medium text-left pt-1"
+              >
+                {deleting === doc.doc_id ? "Deleting…" : "🗑 Delete"}
+              </button>
             </div>
           ))}
         </div>

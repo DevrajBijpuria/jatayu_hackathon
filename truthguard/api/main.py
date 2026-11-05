@@ -295,6 +295,17 @@ def list_documents(user: User = Depends(require_admin)) -> list[dict[str, Any]]:
     ]
 
 
+@app.delete("/documents/{doc_id}")
+def delete_document(doc_id: str, user: User = Depends(require_admin)) -> dict[str, str]:
+    conn = get_conn()
+    row = conn.execute("SELECT doc_id FROM documents WHERE doc_id = ?", [doc_id]).fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="Document not found.")
+    conn.execute("DELETE FROM clauses WHERE doc_id = ?", [doc_id])
+    conn.execute("DELETE FROM documents WHERE doc_id = ?", [doc_id])
+    return {"status": "deleted", "doc_id": doc_id}
+
+
 @app.post("/connectors/{name}/sync")
 def connector_sync(name: str, user: User = Depends(require_admin)) -> dict[str, str]:
     if not config.ENABLE_CONNECTORS:
