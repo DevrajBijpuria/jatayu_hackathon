@@ -288,8 +288,16 @@ def _split_clauses(text: str, doc_id: str) -> list[dict[str, str]]:
     clauses: list[dict[str, str]] = []
 
     if not headings:
-        for i, s in enumerate(re.split(r"(?<=[.!?])\s+", text.strip()), 1):
-            s = s.strip()
+        # Merge short trailing fragments (e.g. "Rs.\n1,500/-") into the preceding sentence
+        # so amounts stay with their context rather than being dropped by the >=15 filter.
+        raw = [s.strip() for s in re.split(r"(?<=[.!?])\s+", text.strip()) if s.strip()]
+        merged: list[str] = []
+        for s in raw:
+            if merged and len(s) < 60:
+                merged[-1] = merged[-1] + " " + s
+            else:
+                merged.append(s)
+        for i, s in enumerate(merged, 1):
             if len(s) >= 15:
                 clauses.append({"clause_id": f"{doc_id}#{i}", "section": str(i), "source_text": s})
         return _dedupe(clauses)
@@ -306,11 +314,14 @@ def _split_clauses(text: str, doc_id: str) -> list[dict[str, str]]:
                 clauses.append({"clause_id": f"{doc_id}#{sec}", "section": sec, "source_text": title})
             continue
 
-        sentences = [
-            s.strip()
-            for s in re.split(r"(?<=[.!?])\s+", body)
-            if s.strip() and len(s.strip()) >= 15
-        ]
+        raw_sents = [s.strip() for s in re.split(r"(?<=[.!?])\s+", body) if s.strip()]
+        merged_sents: list[str] = []
+        for s in raw_sents:
+            if merged_sents and len(s) < 60:
+                merged_sents[-1] = merged_sents[-1] + " " + s
+            else:
+                merged_sents.append(s)
+        sentences = [s for s in merged_sents if len(s) >= 15]
         if not sentences:
             continue
         if len(sentences) == 1:
