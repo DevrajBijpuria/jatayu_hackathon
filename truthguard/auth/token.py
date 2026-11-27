@@ -30,18 +30,17 @@ def _get_jwks_client():
 
 
 def _map_groups(groups: list[str]) -> tuple[list[str], str]:
-    """Return (access_levels, role) for the given IdP groups."""
+    """Return (access_levels, role) for the given IdP groups.
+
+    ADMIN_GROUP only sets role='admin'; document access comes from GROUP_TO_ACCESS
+    alone, so a user without an access group can see no documents.
+    """
     access_levels: list[str] = []
-    role = "employee"
     for grp in groups:
-        levels = config.GROUP_TO_ACCESS.get(grp, [])
-        for lv in levels:
+        for lv in config.GROUP_TO_ACCESS.get(grp, []):
             if lv not in access_levels:
                 access_levels.append(lv)
-        if grp == config.ADMIN_GROUP:
-            role = "admin"
-    if not access_levels:
-        access_levels = ["all"]
+    role = "admin" if config.ADMIN_GROUP in groups else "employee"
     return access_levels, role
 
 
@@ -63,6 +62,13 @@ def verify_token(token: str) -> User:
         issuer=config.OIDC_ISSUER,
         options={"require": ["exp", "iat", "iss", "sub"]},
     )
+
+    # Keycloak's logout only stops refreshes; reject access tokens still in flight.
+    from truthguard.auth.admin_audit import sessions_ended_at
+
+    ended = sessions_ended_at(payload["sub"])
+    if ended is not None and payload["iat"] <= ended:
+        raise jwt.InvalidTokenError("session ended by an administrator; sign in again")
 
     groups: list[str] = payload.get("groups", [])
     access_levels, role = _map_groups(groups)

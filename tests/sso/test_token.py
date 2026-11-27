@@ -23,17 +23,21 @@ class TestMapGroups:
     def test_compliance_group(self):
         levels, role = _map_groups(["tg-compliance"])
         assert set(levels) == {"all", "compliance"}
-        assert role == "admin"
+        assert role == "employee"  # admin rights come only from tg-admins
 
     def test_board_group(self):
         levels, role = _map_groups(["tg-board"])
         assert set(levels) == {"all", "compliance", "board"}
-        assert role == "employee"  # ADMIN_GROUP is tg-compliance, not tg-board
-
-    def test_no_groups_defaults_to_all(self):
-        levels, role = _map_groups([])
-        assert levels == ["all"]
         assert role == "employee"
+
+    def test_no_groups_means_no_document_access(self):
+        levels, role = _map_groups([])
+        assert levels == []
+        assert role == "employee"
+
+    def test_admin_group_grants_no_documents_by_itself(self):
+        assert _map_groups(["tg-admins"]) == ([], "admin")
+        assert _map_groups(["tg-admins", "tg-employees"]) == (["all"], "admin")
 
     def test_duplicate_levels_deduped(self):
         # employee + board both grant "all"; should not duplicate
@@ -97,13 +101,34 @@ class TestVerifyToken:
         assert user.access_levels == ["all"]
         assert user.user_id == "user-123"
 
-    def test_valid_compliance_token(self):
-        payload = _make_payload(sub="admin-456", groups=["tg-compliance"])
+    def test_valid_compliance_admin_token(self):
+        payload = _make_payload(sub="admin-456", groups=["tg-compliance", "tg-admins"])
         cm1, cm2 = self._patch_jwks(payload)
         with cm1, cm2:
             user = verify_token("fake.token.here")
         assert user.role == "admin"
         assert "compliance" in user.access_levels
+
+    def test_token_issued_before_sessions_ended_is_rejected(self):
+        import jwt as pyjwt
+
+        from truthguard.db.conn import get_conn
+
+        payload = _make_payload(groups=["tg-employees"])
+        ended = payload["iat"] + 1
+        get_conn().execute(
+            "INSERT INTO admin_audit (audit_id, acted_at, target_id, action, ends_sessions) "
+            "VALUES ('a1', make_timestamp(?::BIGINT * 1000000), 'user-123', 'disable', TRUE)",
+            [ended],
+        )
+        cm1, cm2 = self._patch_jwks(payload)
+        with cm1, cm2, pytest.raises(pyjwt.InvalidTokenError, match="session ended"):
+            verify_token("old.token")
+
+        # A token from a fresh sign-in after the change is accepted again.
+        cm1, cm2 = self._patch_jwks({**payload, "iat": ended + 5})
+        with cm1, cm2:
+            assert verify_token("new.token").user_id == "user-123"
 
     def test_expired_token_raises(self):
         import jwt as pyjwt

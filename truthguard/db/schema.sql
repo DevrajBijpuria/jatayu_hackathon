@@ -90,3 +90,16 @@ CREATE TABLE IF NOT EXISTS audit_log (
   answer          TEXT,
   trace_json      TEXT                   -- full serialized TGState (see 5.2)
 );
+
+-- User-management actions taken by admins. Never contains a password.
+CREATE TABLE IF NOT EXISTS admin_audit (
+  audit_id        TEXT PRIMARY KEY,
+  acted_at        TIMESTAMP,             -- UTC
+  actor_id        TEXT,                  -- who did it: OIDC 'sub', or 'bootstrap'
+  actor_name      TEXT,
+  target_id       TEXT,                  -- Keycloak user id of the affected user
+  target_email    TEXT,
+  action          TEXT,                  -- create | access_change | enable | disable | admin_grant | admin_revoke | password_reset
+  detail          TEXT,                  -- JSON: what changed, e.g. {"from": "tg-employees", "to": "tg-compliance"}
+  ends_sessions   BOOLEAN DEFAULT FALSE  -- target's sessions were ended; API rejects their tokens issued before 'acted_at'
+);

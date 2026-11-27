@@ -7,6 +7,7 @@ import pytest
 
 # Use an in-memory DuckDB for all tests so they don't touch the real data dir.
 os.environ.setdefault("DUCKDB_PATH", ":memory:")
+os.environ.setdefault("ENABLE_SSO", "false")  # tests use the X-User header, whatever .env says
 os.environ.setdefault("BASELINE_INGEST", "true")
 os.environ.setdefault("BASELINE_RETRIEVE", "true")
 os.environ.setdefault("BASELINE_SYNTHESIZE", "true")

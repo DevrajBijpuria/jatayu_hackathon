@@ -62,7 +62,17 @@ _raw_group_map = os.getenv(
     '{"tg-employees":["all"],"tg-compliance":["all","compliance"],"tg-board":["all","compliance","board"]}',
 )
 GROUP_TO_ACCESS: dict[str, list[str]] = json.loads(_raw_group_map)
-ADMIN_GROUP: str = os.getenv("ADMIN_GROUP", "tg-compliance")
+# Admin rights only; grants no document access by itself.
+ADMIN_GROUP: str = os.getenv("ADMIN_GROUP", "tg-admins")
+
+# ── User management (Keycloak Admin REST API via a service-account client) ────
+KC_ADMIN_CLIENT_ID: str = os.getenv("KC_ADMIN_CLIENT_ID", "truthguard-admin")
+KC_ADMIN_CLIENT_SECRET: str = os.getenv("KC_ADMIN_CLIENT_SECRET", "")
+# true when Keycloak's realm SMTP works (Mailpit locally): new users get Keycloak's
+# "set your password" email instead of a temporary password shown once.
+SEND_PASSWORD_EMAIL: bool = _bool("SEND_PASSWORD_EMAIL", False)
+BOOTSTRAP_ADMIN_EMAIL: str = os.getenv("BOOTSTRAP_ADMIN_EMAIL", "")
+BOOTSTRAP_ADMIN_NAME: str = os.getenv("BOOTSTRAP_ADMIN_NAME", "TruthGuard Admin")
 
 # ── Thresholds ────────────────────────────────────────────────────────────────
 NLI_CONTRADICTION_THRESHOLD: float = 0.80
