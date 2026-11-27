@@ -8,10 +8,13 @@ import os
 from datetime import date
 from typing import Any
 
-from fastapi import Depends, FastAPI, Header, HTTPException, UploadFile
+from fastapi import Depends, FastAPI, Header, HTTPException, Request, UploadFile
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from truthguard import config
+from truthguard.api.users import build_router as build_users_router
+from truthguard.auth.keycloak_admin import KeycloakError
 from truthguard.contracts import User, Verdict
 from truthguard.db.conn import get_conn
 
@@ -67,6 +70,14 @@ def require_admin(user: User = Depends(get_current_user)) -> User:
     return user
 
 
+app.include_router(build_users_router(require_admin))
+
+
+@app.exception_handler(KeycloakError)
+def _keycloak_error(_request: Request, exc: KeycloakError) -> JSONResponse:
+    return JSONResponse(status_code=exc.status, content={"detail": exc.message})
+
+
 # ── Request / response models ─────────────────────────────────────────────────
 
 class AskRequest(BaseModel):
@@ -88,6 +99,8 @@ def me(user: User = Depends(get_current_user)) -> User:
 
 @app.post("/ask")
 def ask(body: AskRequest, user: User = Depends(get_current_user)) -> AskResponse:
+    if not user.access_levels:
+        raise HTTPException(status_code=403, detail="Your account has no document access level. Ask an admin.")
     from truthguard.config import ensure_dirs
     ensure_dirs()
 
@@ -138,6 +151,8 @@ def list_conflicts(
     concept_id: str | None = None,
     user: User = Depends(get_current_user),
 ) -> list[dict[str, Any]]:
+    if not user.access_levels:
+        return []
     conn = get_conn()
     query = """
         SELECT cf.conflict_id, cf.clause_a, cf.clause_b, cf.kind, cf.score,

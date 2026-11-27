@@ -1,4 +1,4 @@
-.PHONY: setup ingest sync ask test eval api lint
+.PHONY: setup ingest sync ask test eval api lint sso bootstrap-admin
 
 setup:
 	pip install -e ".[dev]"
@@ -21,6 +21,14 @@ eval:
 
 api:
 	uvicorn truthguard.api.main:app --reload --port 8000
+
+# Keycloak + Mailpit for ENABLE_SSO=true
+sso:
+	docker compose up -d
+
+# First admin from BOOTSTRAP_ADMIN_EMAIL; run while the API is stopped
+bootstrap-admin:
+	python -m truthguard.auth.bootstrap
 
 lint:
 	ruff check truthguard/ eval/ tests/
