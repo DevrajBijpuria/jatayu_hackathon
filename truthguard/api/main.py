@@ -46,10 +46,12 @@ def get_current_user(
         if not authorization or not authorization.startswith("Bearer "):
             raise HTTPException(status_code=401, detail="Bearer token required.")
         token = authorization.removeprefix("Bearer ").strip()
+        import jwt
+
+        from truthguard.auth.token import verify_token
         try:
-            from truthguard.auth.token import verify_token
             return verify_token(token)
-        except Exception as exc:
+        except jwt.PyJWTError as exc:  # other failures are server errors, not bad tokens
             raise HTTPException(status_code=401, detail=f"Invalid token: {exc}") from exc
 
     if os.getenv("ENV") == "production":

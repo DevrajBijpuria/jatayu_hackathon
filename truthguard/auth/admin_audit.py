@@ -1,4 +1,8 @@
-"""The admin_audit table: who changed which user, what changed, when. Never a password."""
+"""The admin_audit table: who changed which user, what changed, when. Never a password.
+
+sessions_ended_at runs on every authenticated request from FastAPI's thread pool, so
+each call takes its own cursor: one DuckDB connection is not safe across threads.
+"""
 from __future__ import annotations
 
 import json
@@ -18,7 +22,7 @@ def record(
     detail: dict[str, Any],
     ends_sessions: bool = False,
 ) -> None:
-    get_conn().execute(
+    get_conn().cursor().execute(
         "INSERT INTO admin_audit (audit_id, acted_at, actor_id, actor_name, target_id, "
         "target_email, action, detail, ends_sessions) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
         [
@@ -36,7 +40,7 @@ def record(
 
 
 def recent(limit: int = 200) -> list[dict[str, Any]]:
-    rows = get_conn().execute(
+    rows = get_conn().cursor().execute(
         "SELECT audit_id, acted_at, actor_id, actor_name, target_id, target_email, action, "
         "detail, ends_sessions FROM admin_audit ORDER BY acted_at DESC LIMIT ?",
         [limit],
@@ -59,7 +63,7 @@ def recent(limit: int = 200) -> list[dict[str, Any]]:
 
 def sessions_ended_at(user_id: str) -> float | None:
     """Epoch seconds of the last admin action that ended this user's sessions."""
-    row = get_conn().execute(
+    row = get_conn().cursor().execute(
         "SELECT epoch(max(acted_at)) FROM admin_audit WHERE target_id = ? AND ends_sessions",
         [user_id],
     ).fetchone()
