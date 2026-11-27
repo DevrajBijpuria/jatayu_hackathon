@@ -87,8 +87,8 @@ RERANK_TOP_K: int = 5
 # ── USE_BASELINE switches ─────────────────────────────────────────────────────
 # Set a phase key to False once its real impl.py passes acceptance criteria.
 USE_BASELINE: dict[str, bool] = {
-    "ingest": _bool("BASELINE_INGEST", True),
-    "retrieve": _bool("BASELINE_RETRIEVE", True),
+    "ingest": _bool("BASELINE_INGEST", False),
+    "retrieve": _bool("BASELINE_RETRIEVE", False),
     "synthesize": _bool("BASELINE_SYNTHESIZE", True),
     "critic": _bool("BASELINE_CRITIC", True),
     "resolve": _bool("BASELINE_RESOLVE", True),
