@@ -323,6 +323,28 @@ def delete_document(doc_id: str, user: User = Depends(require_admin)) -> dict[st
     return {"status": "deleted", "doc_id": doc_id}
 
 
+@app.get("/debug/clauses")
+def debug_clauses(doc_id: str, user: User = Depends(require_admin)) -> list[dict]:
+    conn = get_conn()
+    rows = conn.execute(
+        "SELECT clause_id, concept_id, subject, clause_type, source_text[:60] FROM clauses WHERE doc_id = ? ORDER BY clause_id",
+        [doc_id],
+    ).fetchall()
+    return [{"clause_id": r[0], "concept_id": r[1], "subject": r[2], "clause_type": r[3], "text": r[4]} for r in rows]
+
+
+@app.get("/debug/clause/{clause_id:path}")
+def debug_clause_full(clause_id: str, user: User = Depends(require_admin)) -> dict:
+    conn = get_conn()
+    row = conn.execute(
+        "SELECT clause_id, concept_id, source_text FROM clauses WHERE clause_id = ?",
+        [clause_id],
+    ).fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="Clause not found.")
+    return {"clause_id": row[0], "concept_id": row[1], "source_text": row[2]}
+
+
 @app.post("/connectors/{name}/sync")
 def connector_sync(name: str, user: User = Depends(require_admin)) -> dict[str, str]:
     if not config.ENABLE_CONNECTORS:
