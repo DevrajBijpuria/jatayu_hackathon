@@ -1,6 +1,8 @@
 .env
+.env.local
 data/index/
 *.duckdb
+*.duckdb.wal
 # model caches
 .cache/
 huggingface/

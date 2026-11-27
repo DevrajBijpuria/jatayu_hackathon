@@ -2,8 +2,8 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { signIn, signOut, useSession } from "next-auth/react";
 import { useUser } from "@/lib/user-context";
+import { accessLabel } from "@/lib/access";
 
 const ENABLE_SSO = process.env.NEXT_PUBLIC_ENABLE_SSO === "true";
 
@@ -13,12 +13,50 @@ const NAV = [
   { href: "/review", label: "Review Queue", icon: "📋", admin: true },
   { href: "/documents", label: "Documents", icon: "🗂️", admin: true },
   { href: "/connectors", label: "Connectors", icon: "🔌", admin: true },
+  { href: "/users", label: "Users", icon: "👥", admin: true },
 ];
+
+function UserHeader() {
+  const { xUser, setXUser, me, isAdmin } = useUser();
+
+  if (!ENABLE_SSO) {
+    return (
+      <label className="flex items-center gap-2 text-xs text-slate-500">
+        Demo user
+        <select
+          value={xUser}
+          onChange={(e) => setXUser(e.target.value as "employee" | "admin")}
+          className="text-xs border border-slate-300 rounded px-1.5 py-1 text-slate-700"
+        >
+          <option value="employee">Employee</option>
+          <option value="admin">Admin</option>
+        </select>
+      </label>
+    );
+  }
+  if (!me) return <span className="text-xs text-slate-400">Signing in…</span>;
+  return (
+    <div className="flex items-center gap-3">
+      <span className="text-sm font-medium text-slate-700">{me.name}</span>
+      <span className="text-xs font-semibold px-2 py-0.5 rounded-full bg-indigo-50 text-indigo-700">
+        {accessLabel(me.access_levels)}
+      </span>
+      {isAdmin && (
+        <span className="text-xs font-semibold px-2 py-0.5 rounded-full bg-amber-50 text-amber-700">Admin</span>
+      )}
+      {/* Plain link, not <Link>: prefetching /logout would sign the user out. */}
+      <a href="/logout" className="text-xs text-slate-500 hover:text-indigo-700 underline">
+        Sign out
+      </a>
+    </div>
+  );
+}
 
 export default function NavShell({ children }: { children: React.ReactNode }) {
   const path = usePathname();
-  const { data: session } = useSession();
-  const { xUser, setXUser, isAdmin } = useUser();
+  const { isAdmin } = useUser();
+
+  if (path === "/login") return <>{children}</>;
 
   return (
     <div className="flex h-screen overflow-hidden">
@@ -48,44 +86,14 @@ export default function NavShell({ children }: { children: React.ReactNode }) {
             );
           })}
         </nav>
-
-        <div className="border-t border-indigo-800 p-3">
-          {ENABLE_SSO ? (
-            session ? (
-              <div className="space-y-1">
-                <p className="text-indigo-200 text-xs truncate">{session.user?.name}</p>
-                <button
-                  onClick={() => signOut()}
-                  className="text-xs text-indigo-300 hover:text-white underline"
-                >
-                  Sign out
-                </button>
-              </div>
-            ) : (
-              <button
-                onClick={() => signIn("keycloak")}
-                className="w-full text-xs bg-indigo-600 hover:bg-indigo-500 text-white rounded px-2 py-1.5"
-              >
-                Sign in
-              </button>
-            )
-          ) : (
-            <div className="space-y-1">
-              <p className="text-indigo-400 text-xs">Demo user</p>
-              <select
-                value={xUser}
-                onChange={(e) => setXUser(e.target.value as "employee" | "admin")}
-                className="w-full text-xs bg-indigo-800 text-indigo-100 border border-indigo-600 rounded px-1.5 py-1"
-              >
-                <option value="employee">Employee</option>
-                <option value="admin">Admin</option>
-              </select>
-            </div>
-          )}
-        </div>
       </aside>
 
-      <main className="flex-1 overflow-y-auto p-6">{children}</main>
+      <div className="flex-1 flex flex-col overflow-hidden">
+        <header className="h-12 shrink-0 bg-white border-b border-slate-200 px-6 flex items-center justify-end">
+          <UserHeader />
+        </header>
+        <main className="flex-1 overflow-y-auto p-6">{children}</main>
+      </div>
     </div>
   );
 }

@@ -18,8 +18,16 @@ async function apiFetch<T>(
     },
   });
   if (!res.ok) {
+    // Token rejected (expired, or an admin ended this session): sign in again.
+    if (res.status === 401 && process.env.NEXT_PUBLIC_ENABLE_SSO === "true") {
+      window.location.href = "/login?reason=expired";
+    }
     const text = await res.text().catch(() => "");
-    throw new Error(`${res.status}: ${text}`);
+    let detail = text;
+    try {
+      detail = JSON.parse(text).detail ?? text;
+    } catch {}
+    throw new Error(`${res.status}: ${detail}`);
   }
   return res.json() as Promise<T>;
 }
@@ -120,3 +128,58 @@ export const syncConnector = (name: string, auth: AuthHeaders) =>
 
 export const deleteDocument = (docId: string, auth: AuthHeaders) =>
   apiFetch<{ status: string; doc_id: string }>(`/documents/${docId}`, auth, { method: "DELETE" });
+
+// ── Users (admin only) ────────────────────────────────────────────────────────
+
+export interface TGUser {
+  id: string;
+  email: string;
+  name: string;
+  access_group: string | null;
+  is_admin: boolean;
+  enabled: boolean;
+  created_at: number | null;
+}
+
+// temporary_password is present only in the create/reset response, exactly once.
+export interface PasswordIssued {
+  temporary_password: string | null;
+  email_sent: boolean;
+}
+
+export interface AdminAuditEntry {
+  audit_id: string;
+  acted_at: string;
+  actor_id: string;
+  actor_name: string | null;
+  target_id: string;
+  target_email: string | null;
+  action: string;
+  detail: Record<string, unknown>;
+  ends_sessions: boolean;
+}
+
+export const listUsers = (search: string, auth: AuthHeaders) =>
+  apiFetch<TGUser[]>(`/users?search=${encodeURIComponent(search)}`, auth);
+
+export const createUser = (
+  body: { name: string; email: string; access_group: string },
+  auth: AuthHeaders,
+) =>
+  apiFetch<PasswordIssued & { user: TGUser }>("/users", auth, {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+
+export const updateUser = (
+  id: string,
+  body: { access_group?: string; is_admin?: boolean; enabled?: boolean },
+  auth: AuthHeaders,
+) =>
+  apiFetch<TGUser>(`/users/${id}`, auth, { method: "PATCH", body: JSON.stringify(body) });
+
+export const resetPassword = (id: string, auth: AuthHeaders) =>
+  apiFetch<PasswordIssued>(`/users/${id}/reset-password`, auth, { method: "POST" });
+
+export const getAdminAudit = (auth: AuthHeaders) =>
+  apiFetch<AdminAuditEntry[]>("/admin-audit?limit=50", auth);

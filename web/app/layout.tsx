@@ -13,7 +13,8 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
   return (
     <html lang="en">
       <body className="min-h-screen bg-slate-50">
-        <SessionProvider>
+        {/* Re-read the session every minute so 5-minute access tokens refresh in time. */}
+        <SessionProvider refetchInterval={60}>
           <UserProvider>
             <NavShell>{children}</NavShell>
           </UserProvider>
