@@ -313,7 +313,8 @@ def _expand_family(
     args: list[Any] = [concept_id] + user_access
     subject_sql = ""
     if subject:
-        subject_sql = "AND c.subject = ?"
+        # Include clauses with same subject OR null subject (amount/detail clauses may not carry it)
+        subject_sql = "AND (c.subject = ? OR c.subject IS NULL)"
         args.append(subject)
 
     rows = conn.execute(
@@ -336,6 +337,95 @@ def _expand_family(
     if as_of is not None:
         clauses = [c for c in clauses if _as_of_ok(c, as_of)]
     return clauses
+
+
+def _expand_neighbors(
+    conn,
+    candidate_ids: list[str],
+    user_access: list[str],
+    radius: int = 6,
+) -> list[Clause]:
+    """Fetch clauses within `radius` sequence positions of each candidate in the same doc.
+
+    Works for both numeric IDs (doc#82) and section-based IDs (doc#8.1_4).
+    For section-based IDs, fetches all clauses in the same subsection (2-level prefix).
+    """
+    targets: set[str] = set()
+    # Each entry is a (doc_id, LIKE-pattern) pair; pattern has underscores escaped for SQL.
+    section_queries: list[tuple[str, str]] = []
+    seen_patterns: set[str] = set()
+
+    for cid in candidate_ids:
+        if "#" not in cid:
+            continue
+        doc_id, seq_str = cid.rsplit("#", 1)
+        try:
+            seq = int(seq_str)
+            for offset in range(-radius, radius + 1):
+                if offset != 0:
+                    targets.add(f"{doc_id}#{seq + offset}")
+        except ValueError:
+            # Section-based ID like "8_3_3" or "8.1_4" — expand at subsection level.
+            # Split keeping separators so we can reconstruct the original prefix string.
+            parts_with_seps = re.split(r"([._])", seq_str)
+            # ["8","_","3","_","3"] for "8_3_3"; ["8",".","1","_","4"] for "8.1_4"
+            # Take first 3 elements (2 levels) if available, else the whole thing.
+            prefix = "".join(parts_with_seps[:3]) if len(parts_with_seps) >= 3 else seq_str
+            if prefix:
+                # Escape underscores so SQL LIKE treats them as literals.
+                escaped = prefix.replace("_", "\\_")
+                like_pat = f"{doc_id}#{escaped}%"
+                if like_pat not in seen_patterns:
+                    seen_patterns.add(like_pat)
+                    section_queries.append((doc_id, like_pat))
+
+    if not targets and not section_queries:
+        return []
+
+    ph_access = ",".join("?" * len(user_access))
+    results: list[Clause] = []
+
+    if targets:
+        ph_ids = ",".join("?" * len(targets))
+        args = list(user_access) + list(targets)
+        rows = conn.execute(
+            f"""SELECT c.clause_id, c.doc_id, c.source_text, c.language, c.text_en,
+                       c.concept_id, c.subject, c.clause_type, c.value_num, c.value_unit,
+                       c.value_text, c.condition_text, c.scope, c.issuer, c.authority_rank,
+                       c.effective_date, c.supersedes, c.access_level, c.extract_conf, c.status
+                FROM clauses c
+                JOIN documents d ON c.doc_id = d.doc_id
+                WHERE c.access_level IN ({ph_access})
+                  AND c.clause_id IN ({ph_ids})
+                  AND c.status = 'active'
+                  AND d.injection_flag = FALSE
+            """,
+            args,
+        ).fetchall()
+        results.extend(_row_to_clause(r) for r in rows)
+
+    for doc_id, like_pat in section_queries:
+        args2 = list(user_access) + [doc_id, like_pat]
+        rows2 = conn.execute(
+            f"""SELECT c.clause_id, c.doc_id, c.source_text, c.language, c.text_en,
+                       c.concept_id, c.subject, c.clause_type, c.value_num, c.value_unit,
+                       c.value_text, c.condition_text, c.scope, c.issuer, c.authority_rank,
+                       c.effective_date, c.supersedes, c.access_level, c.extract_conf, c.status
+                FROM clauses c
+                JOIN documents d ON c.doc_id = d.doc_id
+                WHERE c.access_level IN ({ph_access})
+                  AND c.doc_id = ?
+                  AND c.clause_id LIKE ? ESCAPE '\\'
+                  AND c.status = 'active'
+                  AND d.injection_flag = FALSE
+                ORDER BY c.clause_id
+                LIMIT 40
+            """,
+            args2,
+        ).fetchall()
+        results.extend(_row_to_clause(r) for r in rows2)
+
+    return results
 
 
 # ---------------------------------------------------------------------------
@@ -417,17 +507,27 @@ def run(state: TGState) -> TGState:
             score = next((rc.score for rc in candidates if rc.clause.clause_id == c.clause_id), 0.0)
             family.append(RetrievedClause(clause=c, score=score, via=via))
 
-    # 8. Restricted-conflict flag
+    # 8. Neighborhood expansion: include adjacent clauses from same doc
+    effective_family = family if family else candidates
+    existing_ids = {rc.clause.clause_id for rc in effective_family}
+    candidate_ids_list = [rc.clause.clause_id for rc in candidates]
+    for c in _expand_neighbors(conn, candidate_ids_list, state.user.access_levels):
+        if c.clause_id not in existing_ids:
+            if state.as_of is None or _as_of_ok(c, state.as_of):
+                effective_family.append(RetrievedClause(clause=c, score=0.0, via="neighbor_expansion"))
+                existing_ids.add(c.clause_id)
+
+    # 9. Restricted-conflict flag
     restricted = _has_restricted_conflict(conn, concept_id, state.user.access_levels) if concept_id else False
 
     ms = int((time.monotonic() - t0) * 1000)
-    print(f"[retrieve] latency_ms={ms} candidates={len(candidates)} family={len(family)}")
+    print(f"[retrieve] latency_ms={ms} candidates={len(candidates)} family={len(effective_family)}")
 
     state.retrieval = RetrievalResult(
         concept_id=concept_id,
         question_scope=scope_tags,
         candidates=candidates,
-        family=family if family else candidates,
+        family=effective_family,
         restricted_conflict=restricted,
     )
     state.rewrites = queries[1:]
