@@ -136,9 +136,23 @@ OIDC_CLIENT_ID=truthguard-web
 OIDC_CLIENT_SECRET=
 OIDC_AUDIENCE=truthguard-api
 GROUP_TO_ACCESS={"tg-employees":["all"],"tg-compliance":["all","compliance"],"tg-board":["all","compliance","board"]}
-ADMIN_GROUP=tg-compliance
+ADMIN_GROUP=tg-admins                 # admin rights only; grants no document access by itself
+
+# Keycloak (docker compose reads these from .env)
+KEYCLOAK_PORT=8080                    # host port; OIDC_ISSUER must use the same port
+KEYCLOAK_ADMIN=admin
+KEYCLOAK_ADMIN_PASSWORD=              # Keycloak console password
+KC_ADMIN_CLIENT_ID=truthguard-admin
+KC_ADMIN_CLIENT_SECRET=               # service-account secret; Keycloak and the API both read it
+
+# User management
+SEND_PASSWORD_EMAIL=false             # true: Keycloak emails a set-password link instead of a temporary password
+BOOTSTRAP_ADMIN_EMAIL=                # make bootstrap-admin creates this first admin
+BOOTSTRAP_ADMIN_NAME=TruthGuard Admin
 ```
-Never commit `.env`. Never hard-code keys or model names outside `config.py`.
+The web app has its own `web/.env.local` (see `web/.env.local.example`): `AUTH_SECRET`, `OIDC_ISSUER`, `OIDC_CLIENT_ID`, `TRUTHGUARD_API_URL`, and `NEXT_PUBLIC_ENABLE_SSO`, which must match `ENABLE_SSO`.
+
+Never commit `.env` or `.env.local`. Never hard-code keys or model names outside `config.py`.
 
 ---
 
@@ -151,9 +165,10 @@ truthguard/                      # repo root
 ├── README.md
 ├── .env.example
 ├── pyproject.toml
-├── Makefile                     # make setup / ingest / sync / ask / test / eval / api / web
-├── docker-compose.yml           # keycloak (SSO) for local development
-├── infra/keycloak/realm.json    # realm export, no secrets
+├── Makefile                     # make setup / ingest / sync / ask / test / eval / api / sso / bootstrap-admin
+├── docker-compose.yml           # keycloak (SSO) + mailpit (test inbox) for local development
+├── infra/keycloak/realm.json    # realm export, no secrets (secrets are ${ENV} placeholders)
+├── infra/keycloak/themes/truthguard/  # TruthGuard look for Keycloak's login pages
 ├── data/
 │   ├── raw/
 │   │   ├── rbi/                 # real public circulars (D1)
@@ -171,7 +186,8 @@ truthguard/                      # repo root
 │   ├── prompts/                 # all prompts as .md files, one per task
 │   ├── lang/                    # language detection, Hindi number/date normalisation (shared helper)
 │   ├── connectors/              # email + SharePoint sync (feeds Phase 1)
-│   ├── auth/                    # OIDC token verification, group → access mapping
+│   ├── auth/                    # token.py (OIDC verification, group → access), keycloak_admin.py
+│   │                            # (Admin REST API), admin_audit.py, bootstrap.py (first admin)
 │   ├── ingest/                  # Phase 1
 │   ├── retrieve/                # Phase 2
 │   ├── synthesize/              # Phase 3
@@ -292,6 +308,18 @@ CREATE TABLE IF NOT EXISTS audit_log (
   status          TEXT,
   answer          TEXT,
   trace_json      TEXT                   -- full serialized TGState (see 5.2)
+);
+
+CREATE TABLE IF NOT EXISTS admin_audit (  -- user-management actions; never contains a password
+  audit_id        TEXT PRIMARY KEY,
+  acted_at        TIMESTAMP,             -- UTC
+  actor_id        TEXT,                  -- OIDC 'sub' of the admin, or 'bootstrap'
+  actor_name      TEXT,
+  target_id       TEXT,                  -- Keycloak user id
+  target_email    TEXT,
+  action          TEXT,                  -- create | access_change | enable | disable | admin_grant | admin_revoke | password_reset
+  detail          TEXT,                  -- JSON of what changed
+  ends_sessions   BOOLEAN DEFAULT FALSE  -- the user's sessions were ended; tokens issued before acted_at are rejected
 );
 ```
 
@@ -427,9 +455,14 @@ def run(state: TGState) -> TGState: ...    # fills verdict, writes review_queue 
 | POST | `/connectors/{name}/sync` | — (admin only) | runs one sync now |
 | GET | `/connectors` | — (admin only) | `connector_state` rows |
 | GET | `/me` | — | the current `User` |
+| GET | `/users` | `search?` (admin only) | users with `access_group`, `is_admin`, `enabled` |
+| POST | `/users` | `{name, email, access_group}` (admin only) | `{user, temporary_password, email_sent}`; the password is returned only here, once |
+| PATCH | `/users/{id}` | any of `{access_group, is_admin, enabled}` (admin only) | updated user |
+| POST | `/users/{id}/reset-password` | — (admin only) | `{temporary_password, email_sent}`, once |
+| GET | `/admin-audit` | `limit?` (admin only) | recent `admin_audit` rows |
 
 **Who is the user?**
-- `ENABLE_SSO=true`: every request carries `Authorization: Bearer <access token>` from the OIDC provider. `truthguard/auth/` verifies the signature against the provider's JWKS, checks `iss`, `aud` and expiry, reads the user's groups, and builds `User` with `GROUP_TO_ACCESS`. A user in `ADMIN_GROUP` gets `role='admin'`. Missing or invalid token → 401.
+- `ENABLE_SSO=true`: every request carries `Authorization: Bearer <access token>` from the OIDC provider. `truthguard/auth/` verifies the signature against the provider's JWKS, checks `iss`, `aud` and expiry, reads the user's groups, and builds `User` with `GROUP_TO_ACCESS`. A user in `ADMIN_GROUP` (`tg-admins`) gets `role='admin'`; that group grants no document access, and a user with no access group sees no documents (`/ask` returns 403). Tokens issued before an admin action that ended the user's sessions (`admin_audit.ends_sessions`) are rejected. Missing or invalid token → 401.
 - `ENABLE_SSO=false` (local development and tests): header `X-User: employee|admin` with fixed users `employee` → `['all']`, `admin` → `['all','compliance']`, `role='admin'`. This mode must refuse to start if `ENV=production`.
 
 ### 5.5 LLM rules (`truthguard/llm.py` and `prompts/`)
@@ -688,17 +721,22 @@ Each phase lists: **Goal**, **Inputs → Outputs**, **How it works** (step by st
 8. **Review loop.** `POST /review/{id}` updates the clause fields, re-runs the grounding check on any new value, recomputes `conflicts` for that concept, and closes the item. The same question must then resolve without any other change.
 
 **SSO (`truthguard/auth/` + `web/`, behind `ENABLE_SSO`)**
-- Run **Keycloak** in Docker for the PoC (`docker compose up keycloak`) with a realm `truthguard`, a client `truthguard-web`, and groups `tg-employees`, `tg-compliance`, `tg-board`. Commit the realm export (`infra/keycloak/realm.json`) **without secrets** so anyone can recreate it.
-- Web: Auth.js OIDC provider; the access token is sent to the API as a Bearer token.
+- Run **Keycloak** and **Mailpit** in Docker for the PoC (`make sso` = `docker compose up -d`). Realm `truthguard`: public PKCE client `truthguard-web`, bearer-only `truthguard-api`, service-account client `truthguard-admin` holding only `manage-users`, `view-users`, `query-groups`; access groups `tg-employees`, `tg-compliance`, `tg-board`, and the separate admin group `tg-admins`. Access tokens live 5 minutes. The realm export (`infra/keycloak/realm.json`) is committed **without secrets**: the client secret and SMTP settings are `${ENV}` placeholders filled from `.env`. No users are committed; `make bootstrap-admin` creates the first admin.
+- Every user is in exactly one access group. Being an admin (`tg-admins`) is a separate flag and grants no documents by itself.
+- Web: Auth.js OIDC provider with a TruthGuard `/login` page; signed-out users are redirected there. Passwords are typed only into Keycloak (themed with `infra/keycloak/themes/truthguard`). The access token is refreshed before expiry and sent to the API as a Bearer token. Sign out also ends the Keycloak session. With `NEXT_PUBLIC_ENABLE_SSO=false` the app keeps the demo-user switcher and no login.
 - API: verify every token (signature via JWKS, `iss`, `aud`, expiry); map groups → `access_levels` with `GROUP_TO_ACCESS`; `ADMIN_GROUP` → `role='admin'`. Admin-only endpoints return 403 for other users.
+- User management (`truthguard/api/users.py`) goes through the Keycloak Admin REST API with the service account; TruthGuard stores no passwords. Create and reset generate a temporary password marked temporary in Keycloak (changed at first sign-in) and return it once; with `SEND_PASSWORD_EMAIL=true` Keycloak emails a set-password link instead (Mailpit at http://localhost:8025 locally). An admin cannot disable themselves or remove their own admin rights, and the last admin cannot be removed. Reducing someone's access, removing admin rights or disabling them ends their Keycloak sessions and rejects their older access tokens immediately. Every change is written to `admin_audit`.
+- `make bootstrap-admin` creates the first admin from `BOOTSTRAP_ADMIN_EMAIL` (access group `tg-compliance`), prints a temporary password once, and refuses if any admin exists. Run it while the API is stopped (DuckDB allows one writer).
 - The audit log records the real user id and name.
-- Pointing at Microsoft Entra ID instead of Keycloak must need only `.env` changes.
+- Pointing at Microsoft Entra ID instead of Keycloak must need only `.env` changes for sign-in; user management is Keycloak-specific.
 
 **UI (`web/`, Next.js + shadcn/ui)** — three screens:
 1. **Ask:** question box (accepts English, Hindi and Hinglish), optional "as of" date picker, the signed-in user's name and role (or a user switcher when `ENABLE_SSO=false`). Shows the status badge (green Supported, amber Conflict resolved / Resolved by scope, red Unresolved), the answer, source passages side by side with the deciding text highlighted, the rule that decided, and an expandable step-by-step trace (Retrieve → Draft → Critic → Resolve).
 2. **Conflicts:** the pre-computed conflict list from Phase 1.
 3. **Review queue (admin):** open items, a form to fill missing fields, "Save and re-check".
 4. **Connectors (admin):** status of each connector (`connector_state`), last sync time, "Sync now".
+5. **Login (`/login`):** TruthGuard-branded page with a "Sign in" button that starts the Keycloak sign-in. The header shows the signed-in user's name, access level and Sign out.
+6. **Users (admin, hidden for everyone else):** table with search, "New user" dialog, access-level dropdown described in plain words ("Can see: everyday policies + compliance documents"), admin flag, enable/disable, "Reset password", a one-time temporary-password reveal with a copy button, and the admin activity trail.
 
 For Hindi clauses, show the original Devanagari text and, below it, the English translation (`text_en`) clearly labelled "Translation". Highlight the deciding text in the original.
 
