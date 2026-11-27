@@ -89,6 +89,27 @@ def _ocr_page(page) -> str:
         return ""
 
 
+_ARTIFACT_LINE_RX = re.compile(r"^\s*[^\w\s]{0,2}[\w]{0,2}\s*$")
+
+
+def _clean_pdf_text(text: str) -> str:
+    """Remove single-character artifact lines from pdfplumber output.
+
+    PDFs with watermarks/stamps produce stray single letters or digits on
+    their own lines (e.g. 'M', 'P', '6') that disrupt the sentence splitter.
+    Remove lines that are just 1–3 characters with no sentence content.
+    """
+    lines = text.splitlines()
+    cleaned = []
+    for line in lines:
+        stripped = line.strip()
+        # Keep empty lines (paragraph breaks) and real content lines
+        if not stripped or len(stripped) > 3:
+            cleaned.append(line)
+            # else: discard isolated 1–3 char artifact lines
+    return "\n".join(cleaned)
+
+
 def _parse_pdf(path: Path) -> str:
     import pdfplumber  # type: ignore
     pages: list[str] = []
@@ -99,7 +120,7 @@ def _parse_pdf(path: Path) -> str:
                 ocr_text = _ocr_page(page)
                 if ocr_text.strip():
                     text = ocr_text
-            pages.append(text)
+            pages.append(_clean_pdf_text(text))
     return "\n".join(pages)
 
 
@@ -283,20 +304,45 @@ _SECTION_RX = re.compile(
 )
 
 
+_ABBREV_RX = re.compile(
+    r"\b(Rs|Mr|Mrs|Dr|Prof|St|No|vs|Govt|Rly|Dept|Ltd|Co|Jr|Sr|Sq|Ft|Vol|Fig|viz|approx|Jan|Feb|Mar|Apr|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\.",
+    re.IGNORECASE,
+)
+_PLACEHOLDER = "\x00"
+
+
+def _protect_abbrevs(text: str) -> str:
+    return _ABBREV_RX.sub(lambda m: m.group(0)[:-1] + _PLACEHOLDER, text)
+
+
+def _restore_abbrevs(text: str) -> str:
+    return text.replace(_PLACEHOLDER, ".")
+
+
+def _sentence_split(text: str) -> list[str]:
+    """Split on sentence boundaries, protecting known abbreviations."""
+    protected = _protect_abbrevs(text)
+    parts = re.split(r"(?<=[.!?])\s+", protected.strip())
+    return [_restore_abbrevs(p).strip() for p in parts if p.strip()]
+
+
+def _merge_fragments(raw: list[str], threshold: int = 40) -> list[str]:
+    """Merge trailing short fragments into the preceding sentence."""
+    merged: list[str] = []
+    for s in raw:
+        if merged and len(s) < threshold:
+            merged[-1] = merged[-1] + " " + s
+        else:
+            merged.append(s)
+    return merged
+
+
 def _split_clauses(text: str, doc_id: str) -> list[dict[str, str]]:
     headings = list(_SECTION_RX.finditer(text))
     clauses: list[dict[str, str]] = []
 
     if not headings:
-        # Merge short trailing fragments (e.g. "Rs.\n1,500/-") into the preceding sentence
-        # so amounts stay with their context rather than being dropped by the >=15 filter.
-        raw = [s.strip() for s in re.split(r"(?<=[.!?])\s+", text.strip()) if s.strip()]
-        merged: list[str] = []
-        for s in raw:
-            if merged and len(s) < 60:
-                merged[-1] = merged[-1] + " " + s
-            else:
-                merged.append(s)
+        merged = _merge_fragments(_sentence_split(text))
         for i, s in enumerate(merged, 1):
             if len(s) >= 15:
                 clauses.append({"clause_id": f"{doc_id}#{i}", "section": str(i), "source_text": s})
@@ -314,14 +360,7 @@ def _split_clauses(text: str, doc_id: str) -> list[dict[str, str]]:
                 clauses.append({"clause_id": f"{doc_id}#{sec}", "section": sec, "source_text": title})
             continue
 
-        raw_sents = [s.strip() for s in re.split(r"(?<=[.!?])\s+", body) if s.strip()]
-        merged_sents: list[str] = []
-        for s in raw_sents:
-            if merged_sents and len(s) < 60:
-                merged_sents[-1] = merged_sents[-1] + " " + s
-            else:
-                merged_sents.append(s)
-        sentences = [s for s in merged_sents if len(s) >= 15]
+        sentences = [s for s in _merge_fragments(_sentence_split(body)) if len(s) >= 15]
         if not sentences:
             continue
         if len(sentences) == 1:
@@ -546,7 +585,11 @@ _CONCEPT_SEEDS = [
     ("children_appreciation_scheme", "Financial assistance or appreciation for children of staff",
      "appreciation children;children subordinate staff;children employees;meritorious children;"
      "financial assistance children;scholarship children;award children;child scheme;children scheme;"
-     "children welfare;child welfare staff"),
+     "children welfare;child welfare staff;"
+     "amount of financial assistance;financial assistance amount;sum of rs;award amount;assistance amount;"
+     "marks obtained;academic year;selection merit;one child;eligible child;hrms package ess;"
+     "marks card certificate;hrm section circle;hosa section;order of merit;ranking list;subordinate staff employee;"
+     "suspension not eligible children;number of awards circle"),
     ("staff_welfare_scheme", "Staff welfare scheme or benefit",
      "staff welfare;employee welfare;subordinate staff;welfare scheme;welfare fund;"
      "welfare benefit;staff benefit;employee benefit scheme"),
@@ -574,7 +617,7 @@ _AUTHORITY_SEEDS = [
 def _seed_concepts(conn) -> None:
     for cid, label, synonyms in _CONCEPT_SEEDS:
         conn.execute(
-            "INSERT OR IGNORE INTO concepts (concept_id, label, synonyms) VALUES (?, ?, ?)",
+            "INSERT OR REPLACE INTO concepts (concept_id, label, synonyms) VALUES (?, ?, ?)",
             [cid, label, synonyms],
         )
 
@@ -589,11 +632,13 @@ def _seed_authority(conn) -> None:
         )
 
 
-def _map_concept(conn, concept_text: str) -> str | None:
+def _match_concept(conn, concept_text: str, rows: list | None = None) -> str | None:
+    """Match text against seeded concepts only — never creates new ones."""
     if not concept_text:
         return None
     text_lower = concept_text.lower()
-    rows = conn.execute("SELECT concept_id, label, synonyms FROM concepts").fetchall()
+    if rows is None:
+        rows = conn.execute("SELECT concept_id, label, synonyms FROM concepts").fetchall()
 
     for cid, label, synonyms in rows:
         all_terms = [label.lower()] + (synonyms or "").lower().split(";")
@@ -610,9 +655,17 @@ def _map_concept(conn, concept_text: str) -> str | None:
         score = len(words & label_words)
         if score > best_score:
             best_score, best_cid = score, cid
-    if best_cid:
-        return best_cid
+    return best_cid
 
+
+def _map_concept(conn, concept_text: str) -> str | None:
+    rows = conn.execute("SELECT concept_id, label, synonyms FROM concepts").fetchall()
+    cid = _match_concept(conn, concept_text, rows)
+    if cid:
+        return cid
+    if not concept_text:
+        return None
+    text_lower = concept_text.lower()
     new_id = re.sub(r"[^a-z0-9]+", "_", text_lower).strip("_")[:50]
     if new_id:
         conn.execute(
@@ -919,7 +972,16 @@ def _process_one(
 
         super_refs = _find_supersession_refs(src)
 
-        concept_id = _map_concept(conn, extracted.get("concept") or "")
+        # Try seeded-concept match on LLM concept first, then fall back to src text
+        # (_map_concept always returns something via new-concept creation, so use
+        # _match_concept for the first two passes to give src text a fair chance)
+        llm_concept = extracted.get("concept") or ""
+        concept_id = (
+            _match_concept(conn, llm_concept)
+            or _match_concept(conn, src)
+            or _map_concept(conn, llm_concept)
+            or _map_concept(conn, src)
+        )
 
         issuer = extracted.get("issuer") or meta.get("issuer")
         authority_rank: int | None = None
