@@ -1,15 +1,29 @@
 version: "3.9"
-# Keycloak for local SSO development (ENABLE_SSO=true).
-# Start with: docker compose up keycloak
-# See AGENTS.md §6 Phase 5 (SSO) for setup instructions.
+# Local SSO stack (ENABLE_SSO=true). Values come from .env (see .env.example).
+# Start with: docker compose up -d
+# Keycloak console: http://localhost:8080  ·  Mailpit inbox: http://localhost:8025
 services:
   keycloak:
     image: quay.io/keycloak/keycloak:24.0
     command: start-dev --import-realm
     environment:
-      KEYCLOAK_ADMIN: admin
-      KEYCLOAK_ADMIN_PASSWORD: admin
+      KEYCLOAK_ADMIN: ${KEYCLOAK_ADMIN:-admin}
+      KEYCLOAK_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD:?Set KEYCLOAK_ADMIN_PASSWORD in .env}
+      # Placeholders resolved inside infra/keycloak/realm.json at import time
+      KC_ADMIN_CLIENT_SECRET: ${KC_ADMIN_CLIENT_SECRET:?Set KC_ADMIN_CLIENT_SECRET in .env}
+      KC_SMTP_HOST: ${KC_SMTP_HOST:-mailpit}
+      KC_SMTP_PORT: ${KC_SMTP_PORT:-1025}
+      KC_SMTP_FROM: ${KC_SMTP_FROM:-noreply@truthguard.local}
     volumes:
       - ./infra/keycloak/realm.json:/opt/keycloak/data/import/realm.json:ro
+      - ./infra/keycloak/themes/truthguard:/opt/keycloak/themes/truthguard:ro
     ports:
       - "8080:8080"
+    depends_on:
+      - mailpit
+
+  mailpit:
+    image: axllent/mailpit:v1.21
+    ports:
+      - "8025:8025"   # web inbox
+      - "1025:1025"   # SMTP

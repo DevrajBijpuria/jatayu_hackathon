@@ -1,11 +1,21 @@
 {
   "realm": "truthguard",
+  "displayName": "TruthGuard",
   "enabled": true,
+  "loginTheme": "truthguard",
   "loginWithEmailAllowed": true,
   "registrationAllowed": false,
-  "bruteForceProtected": false,
+  "resetPasswordAllowed": false,
+  "rememberMe": false,
+  "bruteForceProtected": true,
   "sslRequired": "external",
   "accessTokenLifespan": 300,
+  "smtpServer": {
+    "host": "${KC_SMTP_HOST}",
+    "port": "${KC_SMTP_PORT}",
+    "from": "${KC_SMTP_FROM}",
+    "fromDisplayName": "TruthGuard"
+  },
   "clients": [
     {
       "clientId": "truthguard-web",
@@ -16,14 +26,14 @@
       "implicitFlowEnabled": false,
       "directAccessGrantsEnabled": false,
       "serviceAccountsEnabled": false,
-      "pkceCodeChallengeMethod": "S256",
       "redirectUris": [
-        "http://localhost:3000/*",
         "http://localhost:3000/api/auth/callback/keycloak"
       ],
       "webOrigins": ["http://localhost:3000"],
-      "defaultClientScopes": ["openid", "profile", "email", "groups"],
-      "optionalClientScopes": ["address", "phone"],
+      "attributes": {
+        "pkce.code.challenge.method": "S256",
+        "post.logout.redirect.uris": "http://localhost:3000/*"
+      },
       "protocolMappers": [
         {
           "name": "audience-truthguard-api",
@@ -34,6 +44,19 @@
             "included.client.audience": "truthguard-api",
             "id.token.claim": "false",
             "access.token.claim": "true"
+          }
+        },
+        {
+          "name": "groups",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-group-membership-mapper",
+          "consentRequired": false,
+          "config": {
+            "full.path": "false",
+            "id.token.claim": "true",
+            "access.token.claim": "true",
+            "userinfo.token.claim": "true",
+            "claim.name": "groups"
           }
         }
       ]
@@ -47,65 +70,34 @@
       "serviceAccountsEnabled": false,
       "standardFlowEnabled": false,
       "directAccessGrantsEnabled": false
-    }
-  ],
-  "clientScopes": [
+    },
     {
-      "name": "groups",
-      "protocol": "openid-connect",
-      "attributes": {
-        "include.in.token.scope": "true",
-        "display.on.consent.screen": "false"
-      },
-      "protocolMappers": [
-        {
-          "name": "groups",
-          "protocol": "openid-connect",
-          "protocolMapper": "oidc-group-membership-mapper",
-          "consentRequired": false,
-          "config": {
-            "full.path": "false",
-            "id.token.claim": "true",
-            "access.token.claim": "true",
-            "claim.name": "groups",
-            "userinfo.token.claim": "true"
-          }
-        }
-      ]
+      "clientId": "truthguard-admin",
+      "name": "TruthGuard user management (service account)",
+      "enabled": true,
+      "publicClient": false,
+      "clientAuthenticatorType": "client-secret",
+      "secret": "${KC_ADMIN_CLIENT_SECRET}",
+      "serviceAccountsEnabled": true,
+      "standardFlowEnabled": false,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": false
     }
   ],
   "groups": [
     {"name": "tg-employees", "path": "/tg-employees"},
     {"name": "tg-compliance", "path": "/tg-compliance"},
-    {"name": "tg-board", "path": "/tg-board"}
+    {"name": "tg-board", "path": "/tg-board"},
+    {"name": "tg-admins", "path": "/tg-admins"}
   ],
   "users": [
     {
-      "username": "employee1",
+      "username": "service-account-truthguard-admin",
       "enabled": true,
-      "email": "employee1@truthguard.local",
-      "firstName": "Demo",
-      "lastName": "Employee",
-      "groups": ["/tg-employees"],
-      "credentials": [{"type": "password", "value": "demo", "temporary": false}]
-    },
-    {
-      "username": "compliance1",
-      "enabled": true,
-      "email": "compliance1@truthguard.local",
-      "firstName": "Demo",
-      "lastName": "Compliance",
-      "groups": ["/tg-compliance"],
-      "credentials": [{"type": "password", "value": "demo", "temporary": false}]
-    },
-    {
-      "username": "board1",
-      "enabled": true,
-      "email": "board1@truthguard.local",
-      "firstName": "Demo",
-      "lastName": "Board",
-      "groups": ["/tg-board"],
-      "credentials": [{"type": "password", "value": "demo", "temporary": false}]
+      "serviceAccountClientId": "truthguard-admin",
+      "clientRoles": {
+        "realm-management": ["manage-users", "view-users", "query-groups"]
+      }
     }
   ]
 }

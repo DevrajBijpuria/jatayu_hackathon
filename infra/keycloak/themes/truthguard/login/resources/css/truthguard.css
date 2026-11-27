@@ -1,0 +1,48 @@
+/* TruthGuard look for Keycloak's login pages (matches web/ indigo palette). */
+.login-pf body {
+  background: #f8fafc none;
+  font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+}
+
+#kc-header-wrapper {
+  color: #312e81;
+  font-size: 30px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  text-transform: none;
+  padding: 48px 10px 8px;
+}
+
+#kc-header-wrapper::after {
+  content: "Regulatory Intelligence";
+  display: block;
+  font-size: 14px;
+  font-weight: 400;
+  color: #6366f1;
+  letter-spacing: 0;
+  margin-top: 4px;
+}
+
+.card-pf {
+  border-top: 4px solid #4f46e5;
+  border-radius: 12px;
+  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.12);
+}
+
+.btn-primary,
+.btn-primary:focus {
+  background: #4f46e5;
+  border-color: #4f46e5;
+  border-radius: 8px;
+}
+
+.btn-primary:hover,
+.btn-primary:active {
+  background: #4338ca;
+  border-color: #4338ca;
+}
+
+a,
+a:hover {
+  color: #4f46e5;
+}
